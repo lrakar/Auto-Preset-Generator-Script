@@ -30,6 +30,27 @@ local COLORS = {
     separator = 0x383838FF
 }
 
+local function parseNote(noteStr)
+    if not noteStr then return nil end
+    noteStr = noteStr:upper():gsub("B", "#")
+    local noteName = noteStr:match("^[A-G][#]?")
+    local octave = tonumber(noteStr:match("%d+$"))
+    
+    if not noteName or not octave or octave < 0 or octave > 9 then
+        return nil
+    end
+    
+    local noteNum = NOTE_NAMES[noteName]
+    if not noteNum then return nil end
+    
+    local midiNote = noteNum + (octave + 1) * 12
+    if midiNote < 0 or midiNote > 127 then
+        return nil
+    end
+    
+    return midiNote
+end
+
 -- MIDI Utilities
 local function playMIDINote(note, duration)
     local track = reaper.GetSelectedTrack(0, 0)
@@ -38,18 +59,16 @@ local function playMIDINote(note, duration)
     local noteNum = type(note) == "string" and parseNote(note) or note
     if not noteNum then return end
     
-    -- Create a temporary MIDI item
-    local curpos = reaper.GetCursorPosition()
-    local item = reaper.CreateNewMIDIItemInProj(track, curpos, curpos + duration)
-    local take = reaper.GetActiveTake(item)
+    -- Get track MIDI output
+    local midiOutputChannel = 0  -- 0 = channel 1
+    local velocity = 100
     
-    -- Insert note
-    reaper.MIDI_InsertNote(take, false, false, 0, duration * 960, 1, noteNum, 100, false)
-    reaper.MIDI_Sort(take)
+    -- Send MIDI note on
+    reaper.StuffMIDIMessage(0, 0x90 | midiOutputChannel, noteNum, velocity)
     
-    -- Schedule item deletion after playback
+    -- Schedule note off
     reaper.defer(function()
-        reaper.DeleteTrackMediaItem(track, item)
+        reaper.StuffMIDIMessage(0, 0x80 | midiOutputChannel, noteNum, 0)
     end)
 end
 
@@ -90,27 +109,6 @@ local function generateRandomColor()
     local g = math.random(50, 255)
     local b = math.random(50, 255)
     return rgb2num(r, g, b)
-end
-
-local function parseNote(noteStr)
-    if not noteStr then return nil end
-    noteStr = noteStr:upper():gsub("B", "#")
-    local noteName = noteStr:match("^[A-G][#]?")
-    local octave = tonumber(noteStr:match("%d+$"))
-    
-    if not noteName or not octave or octave < 0 or octave > 9 then
-        return nil
-    end
-    
-    local noteNum = NOTE_NAMES[noteName]
-    if not noteNum then return nil end
-    
-    local midiNote = noteNum + (octave + 1) * 12
-    if midiNote < 0 or midiNote > 127 then
-        return nil
-    end
-    
-    return midiNote
 end
 
 local function validateInteger(value)
