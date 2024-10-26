@@ -193,7 +193,7 @@ local function generateRegionsAndMIDI(state)
     reaper.UpdateArrange()
     
     state.show_success = true
-    state.success_message = string.format("✓ Successfully created %d regions and MIDI items", total_items)
+    state.success_message = string.format("√ Successfully created %d regions and MIDI items", total_items)
 end
 
 -- Modern UI Components
@@ -385,17 +385,26 @@ end
 local function createUI()
     ctx = reaper.ImGui_CreateContext('Preset Generator')
     
+    -- Add font configuration
+    local font_size = 14
+    local font = reaper.ImGui_CreateFont('Calibri', font_size)
+    reaper.ImGui_Attach(ctx, font)
+    
     local state = {
         preset_name = "",
         num_instruments = "",
         instrument_data = {},
         error_messages = {},
         show_success = false,
-        success_message = ""
+        success_message = "",
+        font = font  -- Store font reference
     }
     
     local function loop()
+        reaper.ImGui_PushFont(ctx, state.font)  -- Push font at start of frame
         local open = drawUI(state)
+        reaper.ImGui_PopFont(ctx)  -- Pop font at end of frame
+        
         if open then
             reaper.defer(loop)
         else
