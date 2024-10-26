@@ -10,6 +10,12 @@ local NOTE_NAMES = {
     ["AB"] = 8, ["A"] = 9, ["A#"] = 10, ["BB"] = 10, ["B"] = 11
 }
 
+local NOTE_NAMES_REVERSE = {
+    [0] = "C", [1] = "C#", [2] = "D", [3] = "D#",
+    [4] = "E", [5] = "F", [6] = "F#", [7] = "G",
+    [8] = "G#", [9] = "A", [10] = "A#", [11] = "B"
+}
+
 -- Modern UI Color Scheme
 local COLORS = {
     text_primary = 0xEAEAEAFF,
@@ -23,6 +29,56 @@ local COLORS = {
     header = 0x3D5A80FF,
     separator = 0x383838FF
 }
+
+-- MIDI Utilities
+local function playMIDINote(note, duration)
+    local track = reaper.GetSelectedTrack(0, 0)
+    if not track then return end
+    
+    local noteNum = type(note) == "string" and parseNote(note) or note
+    if not noteNum then return end
+    
+    -- Create a temporary MIDI item
+    local curpos = reaper.GetCursorPosition()
+    local item = reaper.CreateNewMIDIItemInProj(track, curpos, curpos + duration)
+    local take = reaper.GetActiveTake(item)
+    
+    -- Insert note
+    reaper.MIDI_InsertNote(take, false, false, 0, duration * 960, 1, noteNum, 100, false)
+    reaper.MIDI_Sort(take)
+    
+    -- Schedule item deletion after playback
+    reaper.defer(function()
+        reaper.DeleteTrackMediaItem(track, item)
+    end)
+end
+
+local function handleMIDIInput(state)
+    local retval, msg = reaper.MIDI_GetRecentInputEvent(0)
+    if not retval then return end
+    
+    -- Check if we have any data
+    if #msg < 3 then return end
+    
+    local statusByte = msg:byte(1)
+    local noteOn = (statusByte >= 0x90 and statusByte <= 0x9F)
+    
+    if noteOn then
+        local note = msg:byte(2)
+        local velocity = msg:byte(3)
+        if velocity > 0 then
+            -- Find which instrument section is open and update its note
+            for i, inst in ipairs(state.instrument_data) do
+                if state.open_sections and state.open_sections[i] then
+                    local octave = math.floor(note / 12) - 1
+                    local noteName = NOTE_NAMES_REVERSE[note % 12]
+                    inst.note = string.format("%s%d", noteName, octave)
+                    break
+                end
+            end
+        end
+    end
+end
 
 -- Utility Functions (kept the same as they work correctly)
 local function rgb2num(r, g, b)
@@ -212,11 +268,17 @@ end
 local function drawInstrumentSection(ctx, state, index)
     local inst = state.instrument_data[index]
     
+    -- Enhanced header styling
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.header)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.header + 0x111111FF)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
     
     local is_open = reaper.ImGui_CollapsingHeader(ctx, string.format("Instrument %d Settings", index))
-    reaper.ImGui_PopStyleColor(ctx, 2)  -- Fixed: Added ctx parameter
+    reaper.ImGui_PopStyleColor(ctx, 3)
+    
+    -- Store open state for MIDI input handling
+    if not state.open_sections then state.open_sections = {} end
+    state.open_sections[index] = is_open
     
     if is_open then
         reaper.ImGui_PushID(ctx, index)
@@ -233,10 +295,23 @@ local function drawInstrumentSection(ctx, state, index)
         
         reaper.ImGui_Spacing(ctx)
         
-        -- Note Input
+        -- Note Input with Play Button
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
+        reaper.ImGui_PushItemWidth(ctx, -80) -- Make room for Play button
         _, inst.note = reaper.ImGui_InputText(ctx, "##note", inst.note)
+        reaper.ImGui_PopItemWidth(ctx)
+        
+        reaper.ImGui_SameLine(ctx)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+        if reaper.ImGui_Button(ctx, "Play##" .. index, 70, 22) then
+            if parseNote(inst.note) then
+                playMIDINote(inst.note, 0.5) -- Play for 0.5 seconds
+            end
+        end
+        reaper.ImGui_PopStyleColor(ctx, 2)
+        
         if state.error_messages["inst_note_" .. index] then
             reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_note_" .. index])
         end
@@ -397,11 +472,13 @@ local function createUI()
         error_messages = {},
         show_success = false,
         success_message = "",
-        font = font  -- Store font reference
+        font = font,  -- Store font reference
+        open_sections = {}  -- Track which sections are open
     }
     
     local function loop()
         reaper.ImGui_PushFont(ctx, state.font)  -- Push font at start of frame
+        handleMIDIInput(state)  -- Handle MIDI input each frame
         local open = drawUI(state)
         reaper.ImGui_PopFont(ctx)  -- Pop font at end of frame
         
