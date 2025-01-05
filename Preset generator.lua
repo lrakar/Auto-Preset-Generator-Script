@@ -230,6 +230,15 @@ local function loadPreset(state, presetName)
     state.num_instruments = tostring(presetData.num_instruments)
     state.instrument_data = presetData.instruments
     
+    for _, inst in ipairs(state.instrument_data) do
+        if inst.range_min == nil then 
+            inst.range_min = 0 
+        end
+        if inst.range_max == nil then 
+            inst.range_max = 127 
+        end
+    end
+    
     return true, "Preset loaded successfully"
 end
 
@@ -244,7 +253,6 @@ local function getPresetList()
     
     -- Get list of JSON files in presets directory
     local i = 0
-    local filenames = {}
     
     repeat
         local filename = reaper.EnumerateFiles(dir, i)
@@ -594,7 +602,23 @@ local function generateRegionsAndMIDI(state)
         local sixteenth_length = (region_length * 960) / 16
         
         for d = 1, num_dynamics do
-            local velocity = math.max(1, math.floor((d / num_dynamics) * 127))
+            local velocity
+            if num_dynamics > 1 then
+                -- d ranges from 1..num_dynamics
+                -- fraction goes from 0..1 over the course of dynamic layers
+                local fraction = (d - 1) / (num_dynamics - 1)
+
+                velocity = math.floor(
+                    inst.range_min + (fraction * (inst.range_max - inst.range_min))
+                )
+            else
+                -- If there's only 1 dynamic layer, just set velocity to range_min
+                velocity = inst.range_min
+            end
+
+            -- Ensure velocity is between 0..127 (if needed)
+            if velocity < 0 then velocity = 0 end
+            if velocity > 127 then velocity = 127 end
             
             for v = 1, num_variations do
                 local region_name = string.format("%s_%s_%d_%d",
@@ -732,7 +756,29 @@ local function drawInstrumentSection(ctx, state, index)
             reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_variations_" .. index])
         end
         endStyleInput(ctx)
-        
+         -- Two-handle (range) slider for velocity
+        styleInput(ctx)
+        reaper.ImGui_Text(ctx, "Velocity Range")
+
+        -- Attempt to use ImGui_SliderInt2 (ReaImGui must support it)
+        local changed, newMin, newMax = reaper.ImGui_SliderInt2(
+            ctx,
+            "##velocity_range_" .. index,
+            inst.range_min,   -- current min
+            inst.range_max,   -- current max
+            0,                -- slider lowest possible value
+            127,              -- slider highest possible value
+            "%d",             -- display format (optional)
+            reaper.ImGui_SliderFlags_AlwaysClamp()  -- optional clamp
+        )
+        if changed then
+            inst.range_min = newMin
+            inst.range_max = newMax
+        end
+        endStyleInput(ctx)
+
+        reaper.ImGui_Spacing(ctx)
+
         reaper.ImGui_Unindent(ctx, 10)
         reaper.ImGui_PopID(ctx)
         reaper.ImGui_Spacing(ctx)
@@ -942,7 +988,9 @@ local function createUI()
             note = "",
             length = "1.5",
             dynamics = "",
-            variations = ""
+            variations = "",
+            range_min = 0,
+            range_max = 127
         })
     end
     
@@ -971,38 +1019,41 @@ local function createUI()
     end
     
     -- Main loop function
-    local function loop()
-        -- Push global styling
-        reaper.ImGui_PushFont(ctx, state.font)
+local function loop()
+    -- Check if context exists
+    if not ctx then return end
+    
+    -- Push global styling
+    reaper.ImGui_PushFont(ctx, state.font)
+    
+    -- Handle input and updates
+    handleInput()
+    
+    -- Draw main UI
+    local open = drawUI(state)
+    
+    -- Pop global styling
+    reaper.ImGui_PopFont(ctx)
+    
+    -- Continue loop if window is open
+    if open then
+        reaper.defer(loop)
+    else
+        -- Store context before clearing
+        local context = ctx
         
-        -- Handle input and updates
-        handleInput()
-        
-        -- Draw main UI
-        local open = drawUI(state)
-        
-        -- Pop global styling
-        reaper.ImGui_PopFont(ctx)
-        
-        -- Continue loop if window is open
-        if open then
-            reaper.defer(loop)
-        else
-            -- Cleanup when closing
-            if state.unsaved_changes then
-                -- Optionally prompt to save changes
-                local save_success = savePreset(state)
-                if not save_success then
-                    -- Handle save failure
-                    state.last_error = "Failed to save changes on exit"
-                    state.error_timestamp = reaper.time_precise()
-                end
+        -- Cleanup when closing
+        if state.unsaved_changes then
+            local save_success = savePreset(state)
+            if not save_success then
+                state.last_error = "Failed to save changes on exit"
+                state.error_timestamp = reaper.time_precise()
             end
-            
-            -- Cleanup and destroy context
-            reaper.ImGui_DestroyContext(ctx)
         end
+
+        ctx = nil
     end
+end
     
     -- Start the main loop
     reaper.defer(loop)
