@@ -305,8 +305,10 @@ local function drawPresetMenu(ctx, state, COLORS)
                         local windowX, windowY = reaper.ImGui_GetWindowPos(ctx)
                         local windowWidth = reaper.ImGui_GetWindowSize(ctx)
                         
-                        -- Position tooltip to the right of the menu
-                        reaper.ImGui_SetNextWindowPos(ctx, windowX + windowWidth, windowY + 30 * i)
+                        -- Position tooltip near the mouse
+                        local mouseX, mouseY = reaper.ImGui_GetMousePos(ctx)
+                        reaper.ImGui_SetNextWindowPos(ctx, mouseX + 12, mouseY + 12)
+
 
                         reaper.ImGui_BeginTooltip(ctx)
                         -- Read and display preset data
