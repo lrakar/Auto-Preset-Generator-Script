@@ -496,10 +496,12 @@ end
 
 local function createNewSoundLayer(instrument)
     local layer_count = #instrument.sound_layers + 1
+    local default_name = string.format("Sound Layer %d", layer_count)
     return {
-        name = string.format("Sound Layer %d", layer_count),  -- Initialize with a default name
-        temp_name = "",
+        name = default_name,
+        temp_name = default_name,
         note = "",
+        plugin = "Kontakt 7",
         velocity_min = 0,
         velocity_max = 127,
         start_layer = 1,
@@ -640,7 +642,9 @@ local function generateRegionsAndMIDI(state)
         local parentTrack = reaper.GetTrack(0, parentIndex)
         
         reaper.SetMediaTrackInfo_Value(parentTrack, "I_FOLDERDEPTH", 1)
+        reaper.SetMediaTrackInfo_Value(parentTrack, "D_VOL", 1.0)  -- Set volume to 0dB (1.0 = 0dB)
         reaper.GetSetMediaTrackInfo_String(parentTrack, "P_NAME", inst.name, true)
+        inst.parent_track_index = parentIndex
         inst.parent_track_index = parentIndex
 
         -- First create all layer tracks
@@ -650,9 +654,19 @@ local function generateRegionsAndMIDI(state)
             reaper.InsertTrackAtIndex(layerIndex, true)
             local layerTrack = reaper.GetTrack(0, layerIndex)
             
+            -- Set track name
             reaper.SetMediaTrackInfo_Value(layerTrack, "I_FOLDERDEPTH", 0)
             reaper.GetSetMediaTrackInfo_String(layerTrack, "P_NAME", 
                 string.format("%s_Layer%d", inst.name, layer_idx), true)
+            
+            -- Add plugin to track
+            if layer.plugin and layer.plugin ~= "" then
+                local fx_index = reaper.TrackFX_AddByName(layerTrack, layer.plugin, false, -1)
+                if fx_index >= 0 then
+                    -- Plugin added successfully
+                    reaper.TrackFX_Show(layerTrack, fx_index, 3) -- Show the plugin window
+                end
+            end
             
             layer.track_index = layerIndex
             layer_tracks[layer_idx] = layerTrack
@@ -765,31 +779,26 @@ local function endStyleInput(ctx)
 end
 
 local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx)
+    -- Push unique ID for this layer
     reaper.ImGui_PushID(ctx, string.format("sound_layer_%d_%d", inst_idx, layer_idx))
     
-    -- Initialize temp_name if needed
-    if not layer.temp_name then 
-        layer.temp_name = layer.name 
+    -- Ensure layer has a proper name
+    if not layer.name or layer.name == "" then
+        layer.name = string.format("Sound Layer %d", layer_idx)
     end
-    
-    -- Header styling (matching parent blue style exactly)
+    if not layer.temp_name then
+        layer.temp_name = layer.name
+    end
+
+    -- Header styling
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.header)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.header + 0x111111FF)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
 
-    -- Build display label with proper default name
-    local displayName = layer.temp_name ~= "" and layer.temp_name or 
-                       layer.name ~= "" and layer.name or 
-                       string.format("Sound Layer %d", layer_idx)
-                     
-    local layer_label = string.format("%s##layer_%d_%d", displayName, inst_idx, layer_idx)
-
-    -- Keep header open while editing
-    if state.keep_open_layer_index == string.format("%d_%d", inst_idx, layer_idx) then
-        reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
-    end
-
-    local is_open = reaper.ImGui_TreeNodeEx(ctx, layer_label, reaper.ImGui_TreeNodeFlags_SpanAvailWidth())
+    local treeNodeFlags = reaper.ImGui_TreeNodeFlags_SpanAvailWidth()
+    local is_open = reaper.ImGui_TreeNodeEx(ctx, treeNodeFlags, string.format("%s", layer.name))
+    
+    -- Pop header styling
     reaper.ImGui_PopStyleColor(ctx, 3)
 
     if is_open then
@@ -798,62 +807,57 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         -- Name Input
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Sound Layer Name")
-        local inputFlags = reaper.ImGui_InputTextFlags_EnterReturnsTrue()
-        local pressedEnter, new_temp_name = reaper.ImGui_InputText(ctx, "##layer_name", layer.temp_name, inputFlags)
-
+        local pressedEnter, new_name = reaper.ImGui_InputText(ctx, 
+            string.format("##name_%d_%d", inst_idx, layer_idx), 
+            layer.temp_name or layer.name, 
+            reaper.ImGui_InputTextFlags_EnterReturnsTrue())
+        
         if pressedEnter then
-            layer.name = new_temp_name  -- Update the name field
-            layer.temp_name = new_temp_name
-            state.keep_open_layer_index = string.format("%d_%d", inst_idx, layer_idx)
-        elseif not reaper.ImGui_IsItemActive(ctx) then
-            if state.keep_open_layer_index == string.format("%d_%d", inst_idx, layer_idx) then
-                state.keep_open_layer_index = nil
-            end
+            layer.name = new_name
+            layer.temp_name = new_name
         end
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
-        -- Note Input with Play Button
+        -- Note Input
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
         reaper.ImGui_PushItemWidth(ctx, -80)
-        _, layer.note = reaper.ImGui_InputText(ctx, "##note", layer.note)
+        _, layer.note = reaper.ImGui_InputText(ctx, 
+            string.format("##note_%d_%d", inst_idx, layer_idx), 
+            layer.note or "")
         reaper.ImGui_PopItemWidth(ctx)
 
+        -- Play Button
         reaper.ImGui_SameLine(ctx)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-        if reaper.ImGui_Button(ctx, "Play##" .. layer_idx, 70, 22) then
+        if reaper.ImGui_Button(ctx, string.format("Play##%d_%d", inst_idx, layer_idx), 70, 22) then
             if parseNote(layer.note) then
                 playMIDINote(layer.note, 0.5)
             end
         end
         reaper.ImGui_PopStyleColor(ctx, 2)
+        endStyleInput(ctx)
+        reaper.ImGui_Spacing(ctx)
 
-        if state.error_messages["layer_note_" .. inst_idx .. "_" .. layer_idx] then
-            reaper.ImGui_TextColored(ctx, COLORS.error, 
-                state.error_messages["layer_note_" .. inst_idx .. "_" .. layer_idx])
-        end
+        -- Plugin Input
+        styleInput(ctx)
+        reaper.ImGui_Text(ctx, "Plugin")
+        _, layer.plugin = reaper.ImGui_InputText(ctx, 
+            string.format("##plugin_%d_%d", inst_idx, layer_idx), 
+            layer.plugin or "Kontakt 7")
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
         -- Velocity Range
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Velocity Range")
-        local changed, newMin, newMax = reaper.ImGui_SliderInt2(
-            ctx,
-            "##velocity_range",
-            layer.velocity_min,
-            layer.velocity_max,
-            0,
-            127,
-            "%d",
-            reaper.ImGui_SliderFlags_AlwaysClamp()
-        )
-        if changed then
-            layer.velocity_min = newMin
-            layer.velocity_max = newMax
-        end
+        _, layer.velocity_min, layer.velocity_max = reaper.ImGui_SliderInt2(ctx, 
+            string.format("##velocity_%d_%d", inst_idx, layer_idx),
+            layer.velocity_min or 0,
+            layer.velocity_max or 127,
+            0, 127, "%d")
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
@@ -861,24 +865,19 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         local max_dynamics = tonumber(instrument.dynamics) or 1
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Dynamic Layer Range")
-        _, layer.start_layer, layer.end_layer = reaper.ImGui_SliderInt2(
-            ctx,
-            "##layer_range",
-            layer.start_layer,
-            layer.end_layer,
-            1,
-            max_dynamics,
-            "%d",
-            reaper.ImGui_SliderFlags_AlwaysClamp()
-        )
+        _, layer.start_layer, layer.end_layer = reaper.ImGui_SliderInt2(ctx, 
+            string.format("##dynamics_%d_%d", inst_idx, layer_idx),
+            layer.start_layer or 1,
+            layer.end_layer or max_dynamics,
+            1, max_dynamics, "%d")
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
-        -- Delete Button (don't allow deletion if it's the only layer)
+        -- Delete Button
         if #instrument.sound_layers > 1 then
             reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
             reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
-            if reaper.ImGui_Button(ctx, "Delete Sound Layer##" .. layer_idx, -1, 22) then
+            if reaper.ImGui_Button(ctx, string.format("Delete Sound Layer##delete_%d_%d", inst_idx, layer_idx), -1, 22) then
                 table.remove(instrument.sound_layers, layer_idx)
             end
             reaper.ImGui_PopStyleColor(ctx, 2)
@@ -887,7 +886,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         reaper.ImGui_Unindent(ctx, 10)
         reaper.ImGui_TreePop(ctx)
     end
-    
+
     reaper.ImGui_PopID(ctx)
 end
 
