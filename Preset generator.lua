@@ -11,13 +11,41 @@ local COLORS = {
     text_secondary = 0xA0A0A0FF,
     background = 0x1E1E1EFF,
     background_light = 0x2D2D2DFF,
-    accent = 0x0096C7FF,
-    accent_hover = 0x48CAE4FF,
+    
+    accent = 0x02659AFF,
+    accent_hover = 0x60A3D6FF,
     error = 0xFF5555FF,
     success = 0x4BB543FF,
     header = 0x3D5A80FF,
     separator = 0x383838FF
 }
+
+-- Unified function for collapsible headers
+    local function drawCollapsibleHeader(ctx, displayLabel, isOpenByDefault, colors, paddingX, paddingY, cornerRadius)
+        -- Push style variables for padding and rounding
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), paddingX, paddingY)
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), cornerRadius)
+    
+        -- Push style colors for header
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), colors.accent)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), colors.accent_hover)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), colors.header + 0x222222FF)
+    
+        -- Ensure header opens by default if needed
+        if isOpenByDefault then
+            reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
+        end
+    
+        -- Render the collapsible header
+        local isOpen = reaper.ImGui_CollapsingHeader(ctx, displayLabel)
+    
+        -- Restore styles
+        reaper.ImGui_PopStyleVar(ctx, 2) -- FramePadding and FrameRounding
+        reaper.ImGui_PopStyleColor(ctx, 3) -- Header colors
+    
+        return isOpen -- Return the state of the collapsible header (open/closed)
+    end
+    
 
 -- JSON encoding/decoding functions
 function JSON.encode(obj)
@@ -505,7 +533,7 @@ local function createNewSoundLayer(instrument)
         velocity_min = 0,
         velocity_max = 127,
         start_layer = 1,
-        end_layer = 1,
+        end_layer = max_dynamics or 1,
         track_index = nil,
         is_open = false
     }
@@ -781,7 +809,7 @@ end
 local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx)
     -- Push unique ID for this layer
     reaper.ImGui_PushID(ctx, string.format("sound_layer_%d_%d", inst_idx, layer_idx))
-    
+
     -- Ensure layer has a proper name
     if not layer.name or layer.name == "" then
         layer.name = string.format("Sound Layer %d", layer_idx)
@@ -790,16 +818,24 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         layer.temp_name = layer.name
     end
 
-    -- Header styling
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.header)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.header + 0x111111FF)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
+    -- Slimmer padding for sound layer headers
+    local paddingX = 12
+    local paddingY = 6
+    local cornerRadius = 6.0
 
-    local treeNodeFlags = reaper.ImGui_TreeNodeFlags_SpanAvailWidth()
-    local is_open = reaper.ImGui_TreeNodeEx(ctx, treeNodeFlags, string.format("%s", layer.name))
-    
-    -- Pop header styling
-    reaper.ImGui_PopStyleColor(ctx, 3)
+    -- Use the drawCollapsibleHeader function
+    local is_open = drawCollapsibleHeader(
+        ctx,
+        string.format("%s", layer.name),
+        layer.is_open,
+        COLORS,
+        paddingX,
+        paddingY,
+        cornerRadius
+    )
+
+    -- Save the open state
+    layer.is_open = is_open
 
     if is_open then
         reaper.ImGui_Indent(ctx, 10)
@@ -850,7 +886,12 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
-        -- Velocity Range
+        -- Style and color for sliders
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_GrabRounding(), 6.0)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_SliderGrab(), COLORS.accent)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_SliderGrabActive(), COLORS.accent_hover)
+
+        -- Velocity Range Slider
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Velocity Range")
         _, layer.velocity_min, layer.velocity_max = reaper.ImGui_SliderInt2(ctx, 
@@ -861,8 +902,8 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
-        -- Dynamic Layer Range
-        local max_dynamics = tonumber(instrument.dynamics) or 1
+        -- Dynamic Layer Range Slider
+        local max_dynamics = tonumber(instrument.dynamics) or 1 -- Ensure max_dynamics is defined
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Dynamic Layer Range")
         _, layer.start_layer, layer.end_layer = reaper.ImGui_SliderInt2(ctx, 
@@ -872,6 +913,10 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             1, max_dynamics, "%d")
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
+
+        -- Restore previous styles
+        reaper.ImGui_PopStyleColor(ctx, 2)
+        reaper.ImGui_PopStyleVar(ctx, 1)
 
         -- Delete Button
         if #instrument.sound_layers > 1 then
@@ -884,11 +929,12 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         end
 
         reaper.ImGui_Unindent(ctx, 10)
-        reaper.ImGui_TreePop(ctx)
     end
 
     reaper.ImGui_PopID(ctx)
 end
+
+
 
 local function drawInstrumentSection(ctx, state, index)
     local inst = state.instrument_data[index]
@@ -902,8 +948,10 @@ local function drawInstrumentSection(ctx, state, index)
     end    
 
     -- Header styling
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.header)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.header + 0x111111FF)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 8) -- Adjust left-right and top-bottom padding
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0) -- Adjust rounded corners
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.accent)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.accent_hover)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
 
     local displayLabel = string.format(
@@ -918,7 +966,10 @@ local function drawInstrumentSection(ctx, state, index)
 
     local is_open = reaper.ImGui_CollapsingHeader(ctx, displayLabel)
     state.open_sections[index] = is_open
-    reaper.ImGui_PopStyleColor(ctx, 3)
+
+    -- Restore previous styles
+    reaper.ImGui_PopStyleVar(ctx, 2) -- FramePadding and FrameRounding
+    reaper.ImGui_PopStyleColor(ctx, 3) -- Header colors
 
     if is_open then
         reaper.ImGui_PushID(ctx, index)
@@ -985,17 +1036,22 @@ local function drawInstrumentSection(ctx, state, index)
             drawSoundLayer(ctx, inst, layer, layer_idx, state, index)
         end
 
-        -- Add New Sound Layer Button (moved here)
+        -- Add New Sound Layer Button
         reaper.ImGui_Spacing(ctx)
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0) -- Rounded corners
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+
         if reaper.ImGui_Button(ctx, "Add New Sound Layer", -1, 30) then
             local instrument = state.instrument_data[index] -- Get the current instrument
             if instrument then
                 table.insert(instrument.sound_layers, createNewSoundLayer(instrument))
             end
         end
+
         reaper.ImGui_PopStyleColor(ctx, 2)
+        reaper.ImGui_PopStyleVar(ctx, 1) -- Restore rounded corner style
+
 
         reaper.ImGui_Unindent(ctx, 10)
         reaper.ImGui_PopID(ctx)
@@ -1019,14 +1075,6 @@ local function drawUI(state)
         -- Add Preset Menu and Delete Dialog
         drawPresetMenu(ctx, state, COLORS)
         drawDeleteConfirmDialog(ctx, state)
-        
-        -- Title
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), COLORS.accent)
-        reaper.ImGui_Text(ctx, "PRESET GENERATOR")
-        reaper.ImGui_PopStyleColor(ctx)
-        reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_Separator(ctx)
-        reaper.ImGui_Spacing(ctx)
         
         -- Main Settings
         styleInput(ctx)
@@ -1060,7 +1108,6 @@ local function drawUI(state)
         endStyleInput(ctx)
         
         reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_Separator(ctx)
         reaper.ImGui_Spacing(ctx)
         
         -- Instrument Sections
@@ -1072,7 +1119,6 @@ local function drawUI(state)
         
         -- Generate and Save Buttons
         reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_Separator(ctx)
         reaper.ImGui_Spacing(ctx)
         
         -- Generate Button
