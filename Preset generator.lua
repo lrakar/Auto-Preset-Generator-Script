@@ -427,7 +427,7 @@ local NOTE_NAMES_REVERSE = {
 
 local function parseNote(noteStr)
     if not noteStr then return nil end
-    noteStr = noteStr:upper():gsub("B", "#")
+    noteStr = noteStr:upper()
     local noteName = noteStr:match("^[A-G][#]?")
     local octave = tonumber(noteStr:match("%d+$"))
     
@@ -494,7 +494,41 @@ local function handleMIDIInput(state)
     end
 end
 
--- Utility Functions (kept the same as they work correctly)
+local function createNewSoundLayer(instrument)
+    local layer_count = #instrument.sound_layers + 1
+    return {
+        name = "",
+        temp_name = "",
+        note = "",
+        velocity_min = 0,
+        velocity_max = 127,
+        start_layer = 1,
+        end_layer = 1,
+        track_index = nil,
+        is_open = false
+    }
+end
+
+
+
+local function createNewInstrument()
+    return {
+        name = "",
+        note = "",
+        length = "1.5",
+        dynamics = "",
+        variations = "",
+        range_min = 0,
+        range_max = 127,
+        parent_track_index = nil,
+        child_track_indices = {},
+        sound_layers = {},   
+        temp_name = ""
+    }
+end
+
+
+
 local function rgb2num(r, g, b)
     return r + (g * 256) + (b * 65536)
 end
@@ -547,17 +581,6 @@ local function validateInputs(state)
             valid = false
         end
         
-        if inst.note == "" then
-            state.error_messages["inst_note_" .. i] = "Note cannot be empty"
-            valid = false
-        else
-            local midiNote = parseNote(inst.note)
-            if not midiNote then
-                state.error_messages["inst_note_" .. i] = "Invalid note. Please enter a note between C0 and C9"
-                valid = false
-            end
-        end
-        
         if not validateFloat(inst.length) then
             state.error_messages["inst_length_" .. i] = "Please enter a valid positive number"
             valid = false
@@ -572,6 +595,26 @@ local function validateInputs(state)
             state.error_messages["inst_variations_" .. i] = "Please enter a valid number"
             valid = false
         end
+
+        -- Validate each sound layer
+        for j, layer in ipairs(inst.sound_layers) do
+            if layer.note == "" then
+                state.error_messages["layer_note_" .. i .. "_" .. j] = "Note cannot be empty"
+                valid = false
+            else
+                local midiNote = parseNote(layer.note)
+                if not midiNote then
+                    state.error_messages["layer_note_" .. i .. "_" .. j] = "Invalid note. Please enter a note between C0 and C9"
+                    valid = false
+                end
+            end
+
+            -- Validate layer ranges
+            if layer.start_layer > layer.end_layer then
+                state.error_messages["layer_range_" .. i .. "_" .. j] = "Start layer cannot be greater than end layer"
+                valid = false
+            end
+        end
     end
     
     return valid
@@ -580,77 +623,123 @@ end
 -- MIDI and Region generation function (kept the same as it works correctly)
 local function generateRegionsAndMIDI(state)
     if not validateInputs(state) then return end
-    
-    local track = reaper.GetSelectedTrack(0, 0)
-    if not track then
-        reaper.ShowMessageBox("Please select a track first", "Error", 0)
-        return
-    end
+
+    local trackCountAtStart = reaper.CountTracks(0)
     
     reaper.Undo_BeginBlock()
-    
     local cursor_pos = reaper.GetCursorPosition()
     local current_pos = cursor_pos
     local total_items = 0
     
     for i = 1, #state.instrument_data do
         local inst = state.instrument_data[i]
-        local color = generateRandomColor()
-        local noteNum = parseNote(inst.note)
-        local region_length = toFloat(inst.length)
-        local num_dynamics = tonumber(inst.dynamics)
-        local num_variations = tonumber(inst.variations)
         
-        local sixteenth_length = (region_length * 960) / 16
+        -- Create parent track
+        local parentIndex = reaper.CountTracks(0)
+        reaper.InsertTrackAtIndex(parentIndex, true)
+        local parentTrack = reaper.GetTrack(0, parentIndex)
         
-        for d = 1, num_dynamics do
-            local velocity
-            if num_dynamics > 1 then
-                -- d ranges from 1..num_dynamics
-                -- fraction goes from 0..1 over the course of dynamic layers
-                local fraction = (d - 1) / (num_dynamics - 1)
+        reaper.SetMediaTrackInfo_Value(parentTrack, "I_FOLDERDEPTH", 1)
+        reaper.GetSetMediaTrackInfo_String(parentTrack, "P_NAME", inst.name, true)
+        inst.parent_track_index = parentIndex
 
-                velocity = math.floor(
-                    inst.range_min + (fraction * (inst.range_max - inst.range_min))
-                )
-            else
-                -- If there's only 1 dynamic layer, just set velocity to range_min
-                velocity = inst.range_min
-            end
-
-            -- Ensure velocity is between 0..127 (if needed)
-            if velocity < 0 then velocity = 0 end
-            if velocity > 127 then velocity = 127 end
+        -- First create all layer tracks
+        local layer_tracks = {}
+        for layer_idx, layer in ipairs(inst.sound_layers) do
+            local layerIndex = reaper.CountTracks(0)
+            reaper.InsertTrackAtIndex(layerIndex, true)
+            local layerTrack = reaper.GetTrack(0, layerIndex)
             
+            reaper.SetMediaTrackInfo_Value(layerTrack, "I_FOLDERDEPTH", 0)
+            reaper.GetSetMediaTrackInfo_String(layerTrack, "P_NAME", 
+                string.format("%s_Layer%d", inst.name, layer_idx), true)
+            
+            layer.track_index = layerIndex
+            layer_tracks[layer_idx] = layerTrack
+        end
+
+        -- Now generate MIDI content
+        local region_length = toFloat(inst.length)
+        local num_variations = tonumber(inst.variations)
+
+        -- Iterate through dynamics and variations first
+        for d = 1, tonumber(inst.dynamics) do
             for v = 1, num_variations do
-                local region_name = string.format("%s_%s_%d_%d",
-                    state.preset_name, inst.name, d, v)
-                
-                local _, region_idx = reaper.AddProjectMarker2(0, true,
-                    current_pos,
-                    current_pos + region_length,
-                    region_name,
-                    -1,
-                    color)
-                
-                local item = reaper.CreateNewMIDIItemInProj(track,
-                    current_pos,
-                    current_pos + region_length)
-                
-                local take = reaper.GetActiveTake(item)
-                reaper.MIDI_InsertNote(take, false, false,
-                    0,
-                    sixteenth_length,
-                    1,
-                    noteNum,
-                    velocity,
-                    false)
-                
-                reaper.MIDI_Sort(take)
-                
+                -- Process all sound layers for this dynamic/variation combination
+                local region_created = false  -- Track if region has been created for this d/v combo
+                for layer_idx, layer in ipairs(inst.sound_layers) do
+                    -- Check if this dynamic layer is within the layer's range
+                    if d >= layer.start_layer and d <= layer.end_layer then
+                        local noteNum = parseNote(layer.note)
+                        if noteNum then
+                            -- Calculate velocity
+                            local velocity
+                            if layer.end_layer > layer.start_layer then
+                                local fraction = (d - layer.start_layer) / (layer.end_layer - layer.start_layer)
+                                velocity = math.floor(
+                                    layer.velocity_min + (fraction * (layer.velocity_max - layer.velocity_min))
+                                )
+                            else
+                                velocity = layer.velocity_min
+                            end
+                            velocity = math.max(1, math.min(127, velocity))
+
+                            -- Create MIDI item with forced initialization
+                            local item = reaper.CreateNewMIDIItemInProj(layer_tracks[layer_idx], 
+                                current_pos, current_pos + region_length)
+                            
+                            -- Initialize take
+                            local take = reaper.GetActiveTake(item)
+                            
+                            -- Create empty MIDI event to initialize take
+                            reaper.MIDI_InsertNote(take,
+                                false,    -- selected
+                                false,    -- muted
+                                0,        -- startppqpos
+                                1,        -- endppqpos
+                                1,        -- chan
+                                0,        -- pitch
+                                0)        -- vel
+                                
+                            -- Delete the empty note
+                            reaper.MIDI_DeleteNote(take, 0)
+                            
+                            -- Now insert our actual note
+                            reaper.MIDI_InsertNote(take, 
+                                false,    -- selected
+                                false,    -- muted
+                                0,        -- startppqpos
+                                math.floor((region_length * 960) / 16), -- endppqpos (sixteenth note length)
+                                1,        -- channel
+                                noteNum,  -- pitch
+                                velocity, -- velocity
+                                false)    -- noSortIn
+                            
+                            reaper.MIDI_Sort(take)
+                            
+                            -- Create region marker if not yet created for this d/v combination
+                            if not region_created then
+                                local region_name = string.format("%s_d%d_v%d",
+                                    inst.name, d, v)
+                                reaper.AddProjectMarker2(0, true, current_pos, 
+                                    current_pos + region_length, region_name, 
+                                    -1, generateRandomColor())
+                                region_created = true
+                            end
+                            
+                            total_items = total_items + 1
+                        end
+                    end
+                end
+                -- Only advance position after processing all layers for this dynamic/variation
                 current_pos = current_pos + region_length
-                total_items = total_items + 1
             end
+        end
+        
+        -- Close the folder
+        local lastTrack = reaper.GetTrack(0, reaper.CountTracks(0) - 1)
+        if lastTrack then
+            reaper.SetMediaTrackInfo_Value(lastTrack, "I_FOLDERDEPTH", -1)
         end
     end
     
@@ -660,6 +749,7 @@ local function generateRegionsAndMIDI(state)
     state.show_success = true
     state.success_message = string.format("Successfully created %d regions and MIDI items", total_items)
 end
+    
 
 -- Modern UI Components
 local function styleInput(ctx)
@@ -674,61 +764,194 @@ local function endStyleInput(ctx)
     reaper.ImGui_PopStyleVar(ctx, 2)    -- Fixed: Added ctx parameter
 end
 
-local function drawInstrumentSection(ctx, state, index)
-    local inst = state.instrument_data[index]
+local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx)
+    reaper.ImGui_PushID(ctx, string.format("sound_layer_%d_%d", inst_idx, layer_idx))
     
-    -- Enhanced header styling
+    -- Initialize temp_name if needed
+    if not layer.temp_name then 
+        layer.temp_name = layer.name 
+    end
+    
+    -- Header styling (matching parent blue style exactly)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.header)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.header + 0x111111FF)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
-    
-    local is_open = reaper.ImGui_CollapsingHeader(ctx, string.format("Instrument %d Settings", index))
+
+    -- Build display label with proper default name
+    local displayName = layer.temp_name ~= "" and layer.temp_name or 
+                       layer.name ~= "" and layer.name or 
+                       string.format("Sound Layer %d", layer_idx)
+                       
+    local layer_label = string.format("%s##layer_%d_%d", displayName, inst_idx, layer_idx)
+
+    -- Keep header open while editing
+    if state.keep_open_layer_index == string.format("%d_%d", inst_idx, layer_idx) then
+        reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
+    end
+
+    local is_open = reaper.ImGui_TreeNodeEx(ctx, displayLabel, reaper.ImGui_TreeNodeFlags_SpanAvailWidth())
     reaper.ImGui_PopStyleColor(ctx, 3)
+
+    if is_open then
+        reaper.ImGui_Indent(ctx, 10)
+
+        -- Name Input
+        styleInput(ctx)
+        reaper.ImGui_Text(ctx, "Sound Layer Name")
+        local inputFlags = reaper.ImGui_InputTextFlags_EnterReturnsTrue()
+        local pressedEnter, new_temp_name = reaper.ImGui_InputText(ctx, "##layer_name", layer.temp_name, inputFlags)
+
+        if pressedEnter then
+            layer.name = new_temp_name
+            layer.temp_name = new_temp_name
+            state.keep_open_layer_index = string.format("%d_%d", inst_idx, layer_idx)
+        elseif not reaper.ImGui_IsItemActive(ctx) then
+            if state.keep_open_layer_index == string.format("%d_%d", inst_idx, layer_idx) then
+                state.keep_open_layer_index = nil
+            end
+        end
+        endStyleInput(ctx)
+        reaper.ImGui_Spacing(ctx)
+
+        -- Note Input with Play Button
+        styleInput(ctx)
+        reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
+        reaper.ImGui_PushItemWidth(ctx, -80)
+        _, layer.note = reaper.ImGui_InputText(ctx, "##note", layer.note)
+        reaper.ImGui_PopItemWidth(ctx)
+
+        reaper.ImGui_SameLine(ctx)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+        if reaper.ImGui_Button(ctx, "Play##" .. layer_idx, 70, 22) then
+            if parseNote(layer.note) then
+                playMIDINote(layer.note, 0.5)
+            end
+        end
+        reaper.ImGui_PopStyleColor(ctx, 2)
+
+        if state.error_messages["layer_note_" .. inst_idx .. "_" .. layer_idx] then
+            reaper.ImGui_TextColored(ctx, COLORS.error, 
+                state.error_messages["layer_note_" .. inst_idx .. "_" .. layer_idx])
+        end
+        endStyleInput(ctx)
+        reaper.ImGui_Spacing(ctx)
+
+        -- Velocity Range
+        styleInput(ctx)
+        reaper.ImGui_Text(ctx, "Velocity Range")
+        local changed, newMin, newMax = reaper.ImGui_SliderInt2(
+            ctx,
+            "##velocity_range",
+            layer.velocity_min,
+            layer.velocity_max,
+            0,
+            127,
+            "%d",
+            reaper.ImGui_SliderFlags_AlwaysClamp()
+        )
+        if changed then
+            layer.velocity_min = newMin
+            layer.velocity_max = newMax
+        end
+        endStyleInput(ctx)
+        reaper.ImGui_Spacing(ctx)
+
+        -- Dynamic Layer Range
+        local max_dynamics = tonumber(instrument.dynamics) or 1
+        styleInput(ctx)
+        reaper.ImGui_Text(ctx, "Dynamic Layer Range")
+        _, layer.start_layer, layer.end_layer = reaper.ImGui_SliderInt2(
+            ctx,
+            "##layer_range",
+            layer.start_layer,
+            layer.end_layer,
+            1,
+            max_dynamics,
+            "%d",
+            reaper.ImGui_SliderFlags_AlwaysClamp()
+        )
+        endStyleInput(ctx)
+        reaper.ImGui_Spacing(ctx)
+
+        -- Delete Button (don't allow deletion if it's the only layer)
+        if #instrument.sound_layers > 1 then
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
+            if reaper.ImGui_Button(ctx, "Delete Sound Layer##" .. layer_idx, -1, 22) then
+                table.remove(instrument.sound_layers, layer_idx)
+            end
+            reaper.ImGui_PopStyleColor(ctx, 2)
+        end
+
+        reaper.ImGui_Unindent(ctx, 10)
+        reaper.ImGui_TreePop(ctx)
+    end
     
-    -- Store open state for MIDI input handling
-    if not state.open_sections then state.open_sections = {} end
+    reaper.ImGui_PopID(ctx)
+end
+
+local function drawInstrumentSection(ctx, state, index)
+    local inst = state.instrument_data[index]
+
+    -- Ensure initialization
+    if not inst.temp_name or inst.temp_name == "" then
+        inst.temp_name = inst.name
+    end
+    if not inst.sound_layers then
+        inst.sound_layers = {}
+    end    
+
+    -- Header styling
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.header)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.header + 0x111111FF)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
+
+    local displayLabel = string.format(
+        "%s##inst_%d",
+        inst.temp_name ~= "" and inst.temp_name or string.format("Instrument %d", index),
+        index
+    )
+
+    if state.keep_open_index == index then
+        reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
+    end
+
+    local is_open = reaper.ImGui_CollapsingHeader(ctx, displayLabel)
     state.open_sections[index] = is_open
-    
+    reaper.ImGui_PopStyleColor(ctx, 3)
+
     if is_open then
         reaper.ImGui_PushID(ctx, index)
         reaper.ImGui_Indent(ctx, 10)
-        
+
         -- Name Input
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Name")
-        _, inst.name = reaper.ImGui_InputText(ctx, "##name", inst.name)
+        local inputFlags = reaper.ImGui_InputTextFlags_EnterReturnsTrue()
+        local pressedEnter, new_temp_name = reaper.ImGui_InputText(ctx, "##temp_name", inst.temp_name, inputFlags)
+
+        if pressedEnter then
+            inst.name = new_temp_name
+            inst.temp_name = new_temp_name
+            if inst.parent_track_index then
+                local parentTrack = reaper.GetTrack(0, inst.parent_track_index)
+                if parentTrack then
+                    reaper.GetSetMediaTrackInfo_String(parentTrack, "P_NAME", inst.name, true)
+                end
+            end
+            state.keep_open_index = index
+        elseif not reaper.ImGui_IsItemActive(ctx) then
+            state.keep_open_index = nil
+        end
+
         if state.error_messages["inst_name_" .. index] then
             reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_name_" .. index])
         end
         endStyleInput(ctx)
-        
         reaper.ImGui_Spacing(ctx)
-        
-        -- Note Input with Play Button
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
-        reaper.ImGui_PushItemWidth(ctx, -80) -- Make room for Play button
-        _, inst.note = reaper.ImGui_InputText(ctx, "##note", inst.note)
-        reaper.ImGui_PopItemWidth(ctx)
-        
-        reaper.ImGui_SameLine(ctx)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-        if reaper.ImGui_Button(ctx, "Play##" .. index, 70, 22) then
-            if parseNote(inst.note) then
-                playMIDINote(inst.note, 0.5) -- Play for 0.5 seconds
-            end
-        end
-        reaper.ImGui_PopStyleColor(ctx, 2)
-        
-        if state.error_messages["inst_note_" .. index] then
-            reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_note_" .. index])
-        end
-        endStyleInput(ctx)
-        
-        reaper.ImGui_Spacing(ctx)
-        
-        -- Length Input
+
+        -- Region Length
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Region Length (seconds)")
         _, inst.length = reaper.ImGui_InputText(ctx, "##length", inst.length)
@@ -736,10 +959,9 @@ local function drawInstrumentSection(ctx, state, index)
             reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_length_" .. index])
         end
         endStyleInput(ctx)
-        
         reaper.ImGui_Spacing(ctx)
-        
-        -- Dynamics Input
+
+        -- Dynamic Layers
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Number of Dynamic Layers")
         _, inst.dynamics = reaper.ImGui_InputText(ctx, "##dynamics", inst.dynamics)
@@ -747,10 +969,9 @@ local function drawInstrumentSection(ctx, state, index)
             reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_dynamics_" .. index])
         end
         endStyleInput(ctx)
-        
         reaper.ImGui_Spacing(ctx)
-        
-        -- Variations Input
+
+        -- Variations
         styleInput(ctx)
         reaper.ImGui_Text(ctx, "Number of Variations")
         _, inst.variations = reaper.ImGui_InputText(ctx, "##variations", inst.variations)
@@ -758,28 +979,24 @@ local function drawInstrumentSection(ctx, state, index)
             reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages["inst_variations_" .. index])
         end
         endStyleInput(ctx)
-         -- Two-handle (range) slider for velocity
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Velocity Range")
-
-        -- Attempt to use ImGui_SliderInt2 (ReaImGui must support it)
-        local changed, newMin, newMax = reaper.ImGui_SliderInt2(
-            ctx,
-            "##velocity_range_" .. index,
-            inst.range_min,   -- current min
-            inst.range_max,   -- current max
-            0,                -- slider lowest possible value
-            127,              -- slider highest possible value
-            "%d",             -- display format (optional)
-            reaper.ImGui_SliderFlags_AlwaysClamp()  -- optional clamp
-        )
-        if changed then
-            inst.range_min = newMin
-            inst.range_max = newMax
-        end
-        endStyleInput(ctx)
-
         reaper.ImGui_Spacing(ctx)
+
+         -- Draw Sound Layers
+         for layer_idx, layer in ipairs(inst.sound_layers) do
+            drawSoundLayer(ctx, inst, layer, layer_idx, state, index)
+        end
+
+        -- Add New Sound Layer Button (moved here)
+        reaper.ImGui_Spacing(ctx)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+        if reaper.ImGui_Button(ctx, "Add New Sound Layer", -1, 30) then
+            local instrument = state.instrument_data[index] -- Get the current instrument
+            if instrument then
+                table.insert(instrument.sound_layers, createNewSoundLayer(instrument))
+            end
+        end
+        reaper.ImGui_PopStyleColor(ctx, 2)
 
         reaper.ImGui_Unindent(ctx, 10)
         reaper.ImGui_PopID(ctx)
@@ -831,13 +1048,7 @@ local function drawUI(state)
         if state.num_instruments ~= prev_num and validateInteger(state.num_instruments) then
             local new_count = tonumber(state.num_instruments)
             while #state.instrument_data < new_count do
-                table.insert(state.instrument_data, {
-                    name = "",
-                    note = "",
-                    length = "1.5",
-                    dynamics = "",
-                    variations = ""
-                })
+                table.insert(state.instrument_data, createNewInstrument())
             end
             while #state.instrument_data > new_count do
                 table.remove(state.instrument_data)
@@ -943,6 +1154,8 @@ local function createUI()
         success_message = "",
         open_sections = {},
         
+        -- sound layer name editing
+        keep_open_layer_index = nil,
         -- Font reference
         font = font,
         
@@ -985,15 +1198,7 @@ local function createUI()
     
     -- Initialize default instrument if empty
     if #state.instrument_data == 0 then
-        table.insert(state.instrument_data, {
-            name = "",
-            note = "",
-            length = "1.5",
-            dynamics = "",
-            variations = "",
-            range_min = 0,
-            range_max = 127
-        })
+        table.insert(state.instrument_data, createNewInstrument())
     end
     
     -- Function to check for MIDI input and update UI
