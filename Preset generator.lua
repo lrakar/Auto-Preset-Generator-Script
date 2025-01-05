@@ -497,7 +497,7 @@ end
 local function createNewSoundLayer(instrument)
     local layer_count = #instrument.sound_layers + 1
     return {
-        name = "",
+        name = string.format("Sound Layer %d", layer_count),  -- Initialize with a default name
         temp_name = "",
         note = "",
         velocity_min = 0,
@@ -781,7 +781,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
     local displayName = layer.temp_name ~= "" and layer.temp_name or 
                        layer.name ~= "" and layer.name or 
                        string.format("Sound Layer %d", layer_idx)
-                       
+                     
     local layer_label = string.format("%s##layer_%d_%d", displayName, inst_idx, layer_idx)
 
     -- Keep header open while editing
@@ -789,7 +789,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
     end
 
-    local is_open = reaper.ImGui_TreeNodeEx(ctx, displayLabel, reaper.ImGui_TreeNodeFlags_SpanAvailWidth())
+    local is_open = reaper.ImGui_TreeNodeEx(ctx, layer_label, reaper.ImGui_TreeNodeFlags_SpanAvailWidth())
     reaper.ImGui_PopStyleColor(ctx, 3)
 
     if is_open then
@@ -802,7 +802,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         local pressedEnter, new_temp_name = reaper.ImGui_InputText(ctx, "##layer_name", layer.temp_name, inputFlags)
 
         if pressedEnter then
-            layer.name = new_temp_name
+            layer.name = new_temp_name  -- Update the name field
             layer.temp_name = new_temp_name
             state.keep_open_layer_index = string.format("%d_%d", inst_idx, layer_idx)
         elseif not reaper.ImGui_IsItemActive(ctx) then
