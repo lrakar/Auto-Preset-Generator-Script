@@ -761,7 +761,7 @@ local function generateRegionsAndMIDI(state)
                             
                             -- Create region marker if not yet created for this d/v combination
                             if not region_created then
-                                local region_name = string.format("%s_d%d_v%d",
+                                local region_name = string.format("%s_%d_%d",
                                     inst.name, d, v)
                                 reaper.AddProjectMarker2(0, true, current_pos, 
                                     current_pos + region_length, region_name, 
