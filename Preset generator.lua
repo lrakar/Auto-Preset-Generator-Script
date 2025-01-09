@@ -1,214 +1,33 @@
 -- Enhanced Preset Generator Script for REAPER with Modern UI
--- Creates regions and corresponding MIDI items with per-instrument settings
 
 -- Initial declarations
 local ctx = nil
-local JSON = {}
+-- Get the script path and require JSON module from the same directory
+local script_path = debug.getinfo(1, "S").source:match([[^@?(.*[\/])[^\/]-$]])
+package.path = package.path .. ";" .. script_path .. "?.lua"
+local JSON = require("json")
 
 -- Modern UI Color Scheme
 local COLORS = {
     text_primary = 0xEAEAEAFF,
     text_secondary = 0xA0A0A0FF,
-    background = 0x1E1E1EFF,
+    background = 0x111216FF,  -- Changed from 0x1E1E1EFF to 0x111216FF
     background_light = 0x2D2D2DFF,
     
-    accent = 0x02659AFF,
+    accent = 0x1F6FEBFF,
     accent_hover = 0x60A3D6FF,
     error = 0xFF5555FF,
     success = 0x4BB543FF,
     header = 0x3D5A80FF,
-    separator = 0x383838FF
+    separator = 0x383838FF,
+    
+    -- Add the two container background colors
+    instrument_container_bg = 0x24252DFF,  -- Parent collapsible header background
+    sound_layer_container_bg = 0x363742FF,  -- Child collapsible header background
+    
+    collapsable_header = 0x596B78FF,         -- Added new color
+    collapsable_header_hover = 0x73828CFF    -- Added new color
 }
-
--- Unified function for collapsible headers
-    local function drawCollapsibleHeader(ctx, displayLabel, isOpenByDefault, colors, paddingX, paddingY, cornerRadius)
-        -- Push style variables for padding and rounding
-        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), paddingX, paddingY)
-        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), cornerRadius)
-    
-        -- Push style colors for header
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), colors.accent)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), colors.accent_hover)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), colors.header + 0x222222FF)
-    
-        -- Ensure header opens by default if needed
-        if isOpenByDefault then
-            reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
-        end
-    
-        -- Render the collapsible header
-        local isOpen = reaper.ImGui_CollapsingHeader(ctx, displayLabel)
-    
-        -- Restore styles
-        reaper.ImGui_PopStyleVar(ctx, 2) -- FramePadding and FrameRounding
-        reaper.ImGui_PopStyleColor(ctx, 3) -- Header colors
-    
-        return isOpen -- Return the state of the collapsible header (open/closed)
-    end
-    
-
--- JSON encoding/decoding functions
-function JSON.encode(obj)
-    local function serialize(o)
-        if type(o) == "number" then
-            return tostring(o)
-        elseif type(o) == "string" then
-            return string.format("%q", o)
-        elseif type(o) == "table" then
-            local parts = {}
-            if #o > 0 then -- Array
-                for _, v in ipairs(o) do
-                    table.insert(parts, serialize(v))
-                end
-                return "[" .. table.concat(parts, ",") .. "]"
-            else -- Object
-                for k, v in pairs(o) do
-                    table.insert(parts, string.format("%q:%s", k, serialize(v)))
-                end
-                return "{" .. table.concat(parts, ",") .. "}"
-            end
-        end
-        return "null"
-    end
-    return serialize(obj)
-end
-
-function JSON.decode(str)
-    local pos = 1
-    
-    -- Forward declarations
-    local parseValue, parseObject, parseArray, parseString, parseNumber
-    
-    function parseString()
-        local startPos = pos + 1 -- Skip opening quote
-        local endPos = startPos
-        
-        while endPos <= #str do
-            if str:sub(endPos,endPos) == '"' and str:sub(endPos-1,endPos-1) ~= '\\' then
-                break
-            end
-            endPos = endPos + 1
-        end
-        
-        pos = endPos + 1
-        return str:sub(startPos, endPos-1)
-    end
-    
-    function parseNumber()
-        local numEnd = pos
-        while numEnd <= #str and str:sub(numEnd,numEnd):match("[%d%.%-]") do
-            numEnd = numEnd + 1
-        end
-        local num = str:sub(pos, numEnd-1)
-        pos = numEnd
-        return tonumber(num)
-    end
-    
-    function parseObject()
-        local obj = {}
-        pos = pos + 1 -- Skip {
-        
-        while pos <= #str do
-            -- Skip whitespace
-            while pos <= #str and str:sub(pos,pos):match("%s") do pos = pos + 1 end
-            
-            if str:sub(pos,pos) == "}" then
-                pos = pos + 1
-                break
-            end
-            
-            if str:sub(pos,pos) ~= '"' then
-                error("Expected string key in object")
-            end
-            
-            local key = parseString()
-            
-            -- Skip whitespace and colon
-            while pos <= #str and str:sub(pos,pos):match("[%s:]") do pos = pos + 1 end
-            
-            obj[key] = parseValue()
-            
-            -- Skip whitespace
-            while pos <= #str and str:sub(pos,pos):match("%s") do pos = pos + 1 end
-            
-            if str:sub(pos,pos) == "}" then
-                pos = pos + 1
-                break
-            elseif str:sub(pos,pos) == "," then
-                pos = pos + 1
-            end
-        end
-        return obj
-    end
-    
-    function parseArray()
-        local arr = {}
-        pos = pos + 1 -- Skip [
-        
-        while pos <= #str do
-            -- Skip whitespace
-            while pos <= #str and str:sub(pos,pos):match("%s") do pos = pos + 1 end
-            
-            if str:sub(pos,pos) == "]" then
-                pos = pos + 1
-                break
-            end
-            
-            table.insert(arr, parseValue())
-            
-            -- Skip whitespace
-            while pos <= #str and str:sub(pos,pos):match("%s") do pos = pos + 1 end
-            
-            if str:sub(pos,pos) == "]" then
-                pos = pos + 1
-                break
-            elseif str:sub(pos,pos) == "," then
-                pos = pos + 1
-            end
-        end
-        return arr
-    end
-    
-    function parseValue()
-        -- Skip whitespace
-        while pos <= #str and str:sub(pos,pos):match("%s") do pos = pos + 1 end
-        
-        local c = str:sub(pos,pos)
-        if c == "{" then
-            return parseObject()
-        elseif c == "[" then
-            return parseArray()
-        elseif c == '"' then
-            return parseString()
-        elseif c:match("[%d%-]") then
-            return parseNumber()
-        elseif str:sub(pos,pos+3) == "true" then
-            pos = pos + 4
-            return true
-        elseif str:sub(pos,pos+4) == "false" then
-            pos = pos + 5
-            return false
-        elseif str:sub(pos,pos+3) == "null" then
-            pos = pos + 4
-            return nil
-        else
-            error("Unexpected character at position " .. pos .. ": " .. c)
-        end
-    end
-    
-    -- Start parsing
-    local result = parseValue()
-    
-    -- Skip trailing whitespace
-    while pos <= #str and str:sub(pos,pos):match("%s") do pos = pos + 1 end
-    
-    -- Check for trailing characters
-    if pos <= #str then
-        error("Trailing characters in JSON string")
-    end
-    
-    return result
-end
 
 -- Preset Management Functions
 local function getPresetsDirectory()
@@ -682,10 +501,10 @@ local function generateRegionsAndMIDI(state)
             reaper.InsertTrackAtIndex(layerIndex, true)
             local layerTrack = reaper.GetTrack(0, layerIndex)
             
-            -- Set track name
+            -- Set track name using the layer name instead of generic Layer number
             reaper.SetMediaTrackInfo_Value(layerTrack, "I_FOLDERDEPTH", 0)
             reaper.GetSetMediaTrackInfo_String(layerTrack, "P_NAME", 
-                string.format("%s_Layer%d", inst.name, layer_idx), true)
+                string.format("%s_%s", inst.name, layer.name), true)
             
             -- Add plugin to track
             if layer.plugin and layer.plugin ~= "" then
@@ -797,8 +616,8 @@ end
 local function styleInput(ctx)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 8, 6)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_FrameBg(), COLORS.background_light)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_FrameBgHovered(), COLORS.background_light + 0x111111FF)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_FrameBg(), 0x4F4F4FFF)  -- Changed input field background color
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_FrameBgHovered(), 0x4F4F4FFF + 0x111111FF)
 end
 
 local function endStyleInput(ctx)
@@ -807,9 +626,7 @@ local function endStyleInput(ctx)
 end
 
 local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx)
-    -- Push unique ID for this layer
     reaper.ImGui_PushID(ctx, string.format("sound_layer_%d_%d", inst_idx, layer_idx))
-
     -- Ensure layer has a proper name
     if not layer.name or layer.name == "" then
         layer.name = string.format("Sound Layer %d", layer_idx)
@@ -818,123 +635,132 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         layer.temp_name = layer.name
     end
 
-    -- Slimmer padding for sound layer headers
-    local paddingX = 12
-    local paddingY = 6
-    local cornerRadius = 6.0
+    -- Header styling
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 8)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.collapsable_header)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.collapsable_header_hover)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
 
-    -- Use the drawCollapsibleHeader function
-    local is_open = drawCollapsibleHeader(
-        ctx,
-        string.format("%s", layer.name),
-        layer.is_open,
-        COLORS,
-        paddingX,
-        paddingY,
-        cornerRadius
-    )
-
-    -- Save the open state
+    -- Collapsing header
+    local is_open = reaper.ImGui_CollapsingHeader(ctx, layer.name)
     layer.is_open = is_open
 
+    -- Restore header styles
+    reaper.ImGui_PopStyleColor(ctx, 3)
+    reaper.ImGui_PopStyleVar(ctx, 2)
+
     if is_open then
-        reaper.ImGui_Indent(ctx, 10)
-
-        -- Name Input
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Sound Layer Name")
-        local pressedEnter, new_name = reaper.ImGui_InputText(ctx, 
-            string.format("##name_%d_%d", inst_idx, layer_idx), 
-            layer.temp_name or layer.name, 
-            reaper.ImGui_InputTextFlags_EnterReturnsTrue())
+        -- Content container styling
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ChildRounding(), 6.0)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ChildBg(), COLORS.sound_layer_container_bg)  -- Changed background color
         
-        if pressedEnter then
-            layer.name = new_name
-            layer.temp_name = new_name
-        end
-        endStyleInput(ctx)
-        reaper.ImGui_Spacing(ctx)
+        if reaper.ImGui_BeginChild(ctx, "layer_content" .. layer_idx, -1, 320) then
+            -- Add same padding at top as left
+            reaper.ImGui_Spacing(ctx)
+            reaper.ImGui_Indent(ctx, 10)
+            -- Add right padding to match left
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 0)
 
-        -- Note Input
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
-        reaper.ImGui_PushItemWidth(ctx, -80)
-        _, layer.note = reaper.ImGui_InputText(ctx, 
-            string.format("##note_%d_%d", inst_idx, layer_idx), 
-            layer.note or "")
-        reaper.ImGui_PopItemWidth(ctx)
-
-        -- Play Button
-        reaper.ImGui_SameLine(ctx)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-        if reaper.ImGui_Button(ctx, string.format("Play##%d_%d", inst_idx, layer_idx), 70, 22) then
-            if parseNote(layer.note) then
-                playMIDINote(layer.note, 0.5)
+            -- Name Input
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Sound Layer Name")
+            local pressedEnter, new_name = reaper.ImGui_InputText(ctx, 
+                string.format("##name_%d_%d", inst_idx, layer_idx), 
+                layer.temp_name or layer.name, 
+                reaper.ImGui_InputTextFlags_EnterReturnsTrue())
+            
+            if pressedEnter then
+                layer.name = new_name
+                layer.temp_name = new_name
             end
-        end
-        reaper.ImGui_PopStyleColor(ctx, 2)
-        endStyleInput(ctx)
-        reaper.ImGui_Spacing(ctx)
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
 
-        -- Plugin Input
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Plugin")
-        _, layer.plugin = reaper.ImGui_InputText(ctx, 
-            string.format("##plugin_%d_%d", inst_idx, layer_idx), 
-            layer.plugin or "Kontakt 7")
-        endStyleInput(ctx)
-        reaper.ImGui_Spacing(ctx)
+            -- Note Input with Play Button
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
+            reaper.ImGui_PushItemWidth(ctx, -80)
+            _, layer.note = reaper.ImGui_InputText(ctx, 
+                string.format("##note_%d_%d", inst_idx, layer_idx), 
+                layer.note or "")
+            reaper.ImGui_PopItemWidth(ctx)
 
-        -- Style and color for sliders
-        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_GrabRounding(), 6.0)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_SliderGrab(), COLORS.accent)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_SliderGrabActive(), COLORS.accent_hover)
-
-        -- Velocity Range Slider
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Velocity Range")
-        _, layer.velocity_min, layer.velocity_max = reaper.ImGui_SliderInt2(ctx, 
-            string.format("##velocity_%d_%d", inst_idx, layer_idx),
-            layer.velocity_min or 0,
-            layer.velocity_max or 127,
-            0, 127, "%d")
-        endStyleInput(ctx)
-        reaper.ImGui_Spacing(ctx)
-
-        -- Dynamic Layer Range Slider
-        local max_dynamics = tonumber(instrument.dynamics) or 1 -- Ensure max_dynamics is defined
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Dynamic Layer Range")
-        _, layer.start_layer, layer.end_layer = reaper.ImGui_SliderInt2(ctx, 
-            string.format("##dynamics_%d_%d", inst_idx, layer_idx),
-            layer.start_layer or 1,
-            layer.end_layer or max_dynamics,
-            1, max_dynamics, "%d")
-        endStyleInput(ctx)
-        reaper.ImGui_Spacing(ctx)
-
-        -- Restore previous styles
-        reaper.ImGui_PopStyleColor(ctx, 2)
-        reaper.ImGui_PopStyleVar(ctx, 1)
-
-        -- Delete Button
-        if #instrument.sound_layers > 1 then
-            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
-            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
-            if reaper.ImGui_Button(ctx, string.format("Delete Sound Layer##delete_%d_%d", inst_idx, layer_idx), -1, 22) then
-                table.remove(instrument.sound_layers, layer_idx)
+            -- Play Button
+            reaper.ImGui_SameLine(ctx)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+            if reaper.ImGui_Button(ctx, string.format("Play##%d_%d", inst_idx, layer_idx), 70, 22) then
+                if parseNote(layer.note) then
+                    playMIDINote(layer.note, 0.5)
+                end
             end
             reaper.ImGui_PopStyleColor(ctx, 2)
-        end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
 
-        reaper.ImGui_Unindent(ctx, 10)
+            -- Plugin Input
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Plugin")
+            _, layer.plugin = reaper.ImGui_InputText(ctx, 
+                string.format("##plugin_%d_%d", inst_idx, layer_idx), 
+                layer.plugin or "Kontakt 7")
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+
+            -- Sliders styling
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_GrabRounding(), 6.0)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_SliderGrab(), COLORS.accent)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_SliderGrabActive(), COLORS.accent_hover)
+
+            -- Velocity Range Slider
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Velocity Range")
+            _, layer.velocity_min, layer.velocity_max = reaper.ImGui_SliderInt2(ctx, 
+                string.format("##velocity_%d_%d", inst_idx, layer_idx),
+                layer.velocity_min or 0,
+                layer.velocity_max or 127,
+                0, 127, "%d")
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+
+            -- Dynamic Layer Range Slider
+            local max_dynamics = tonumber(instrument.dynamics) or 1
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Dynamic Layer Range")
+            _, layer.start_layer, layer.end_layer = reaper.ImGui_SliderInt2(ctx, 
+                string.format("##dynamics_%d_%d", inst_idx, layer_idx),
+                layer.start_layer or 1,
+                layer.end_layer or max_dynamics,
+                1, max_dynamics, "%d")
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+
+            -- Restore slider styles
+            reaper.ImGui_PopStyleColor(ctx, 2)
+            reaper.ImGui_PopStyleVar(ctx)
+
+            -- Delete Button
+            if #instrument.sound_layers > 1 then
+                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
+                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
+                if reaper.ImGui_Button(ctx, string.format("Delete Sound Layer##delete_%d_%d", inst_idx, layer_idx), -1, 22) then
+                    table.remove(instrument.sound_layers, layer_idx)
+                end
+                reaper.ImGui_PopStyleColor(ctx, 2)
+            end
+
+            reaper.ImGui_Unindent(ctx, 10)
+            reaper.ImGui_PopStyleVar(ctx)
+            reaper.ImGui_EndChild(ctx)
+        end
+        
+        reaper.ImGui_PopStyleColor(ctx)
+        reaper.ImGui_PopStyleVar(ctx)
     end
 
     reaper.ImGui_PopID(ctx)
 end
-
-
 
 local function drawInstrumentSection(ctx, state, index)
     local inst = state.instrument_data[index]
@@ -947,36 +773,50 @@ local function drawInstrumentSection(ctx, state, index)
         inst.sound_layers = {}
     end    
 
-    -- Header styling
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 8) -- Adjust left-right and top-bottom padding
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0) -- Adjust rounded corners
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.accent)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.accent_hover)
-    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
-
+    -- Create the header label
     local displayLabel = string.format(
         "%s##inst_%d",
         inst.temp_name ~= "" and inst.temp_name or string.format("Instrument %d", index),
         index
     )
 
+    -- Header styling
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 8)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.collapsable_header)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.collapsable_header_hover)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
+
     if state.keep_open_index == index then
-        reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Always())
+        reaper.ImGui_SetNextItemOpen(ctx, true, reaper.ImGui_Cond_Once())
     end
 
     local is_open = reaper.ImGui_CollapsingHeader(ctx, displayLabel)
     state.open_sections[index] = is_open
 
-    -- Restore previous styles
-    reaper.ImGui_PopStyleVar(ctx, 2) -- FramePadding and FrameRounding
-    reaper.ImGui_PopStyleColor(ctx, 3) -- Header colors
+    -- Restore header styles
+    reaper.ImGui_PopStyleVar(ctx, 2)
+    reaper.ImGui_PopStyleColor(ctx, 3)
 
     if is_open then
         reaper.ImGui_PushID(ctx, index)
+        
+        -- Container background
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ChildRounding(), 6.0)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ChildBg(), COLORS.instrument_container_bg)  -- Changed background color
+        
+        -- Add consistent padding on all sides
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 10)
+        
+        -- Begin child with explicit height
+        local contentHeight = 315 + (#inst.sound_layers * 50) 
+        reaper.ImGui_BeginChild(ctx, "inst_frame" .. index, -1, contentHeight)
+
         reaper.ImGui_Indent(ctx, 10)
 
         -- Name Input
         styleInput(ctx)
+        reaper.ImGui_Spacing(ctx)
         reaper.ImGui_Text(ctx, "Name")
         local inputFlags = reaper.ImGui_InputTextFlags_EnterReturnsTrue()
         local pressedEnter, new_temp_name = reaper.ImGui_InputText(ctx, "##temp_name", inst.temp_name, inputFlags)
@@ -1031,31 +871,34 @@ local function drawInstrumentSection(ctx, state, index)
         endStyleInput(ctx)
         reaper.ImGui_Spacing(ctx)
 
-         -- Draw Sound Layers
-         for layer_idx, layer in ipairs(inst.sound_layers) do
-            drawSoundLayer(ctx, inst, layer, layer_idx, state, index)
-        end
-
-        -- Add New Sound Layer Button
+        -- Add New Sound Layer Button (moved up)
         reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0) -- Rounded corners
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
 
         if reaper.ImGui_Button(ctx, "Add New Sound Layer", -1, 30) then
-            local instrument = state.instrument_data[index] -- Get the current instrument
+            local instrument = state.instrument_data[index]
             if instrument then
                 table.insert(instrument.sound_layers, createNewSoundLayer(instrument))
             end
         end
 
         reaper.ImGui_PopStyleColor(ctx, 2)
-        reaper.ImGui_PopStyleVar(ctx, 1) -- Restore rounded corner style
+        reaper.ImGui_PopStyleVar(ctx)
+        reaper.ImGui_Spacing(ctx)
 
+        -- Draw Sound Layers
+        for layer_idx, layer in ipairs(inst.sound_layers) do
+            drawSoundLayer(ctx, inst, layer, layer_idx, state, index)
+        end
 
         reaper.ImGui_Unindent(ctx, 10)
+        reaper.ImGui_EndChild(ctx)
+        
+        reaper.ImGui_PopStyleVar(ctx, 2) -- Pop WindowPadding and ChildRounding
+        reaper.ImGui_PopStyleColor(ctx)
         reaper.ImGui_PopID(ctx)
-        reaper.ImGui_Spacing(ctx)
     end
 end
 
@@ -1202,7 +1045,7 @@ local function createUI()
         -- sound layer name editing
         keep_open_layer_index = nil,
         -- Font reference
-        font = font,
+        font = font,  -- THIS LINE WAS REFERENCING AN UNDEFINED font VARIABLE
         
         -- Preset management state
         show_delete_confirm = false,  -- Controls delete confirmation dialog
@@ -1306,7 +1149,7 @@ local function loop()
         ctx = nil
     end
 end
-    
+
     -- Start the main loop
     reaper.defer(loop)
     
