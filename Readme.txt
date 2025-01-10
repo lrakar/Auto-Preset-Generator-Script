@@ -2,7 +2,7 @@ Program Overview
 A custom audio sample extraction and preparation tool for REAPER that automates the creation of MIDI items, regions, for rendering each sample midi to wav.
 
 Purpose
-Extract audio samples from samplers like Kontakt, SINE, or LABS.
+Extract audio samples from samplers
 Generate MIDI items and regions with consistent naming prepared for rendering.
 
 Key Features
