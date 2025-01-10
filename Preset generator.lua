@@ -627,6 +627,7 @@ end
 
 local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx)
     reaper.ImGui_PushID(ctx, string.format("sound_layer_%d_%d", inst_idx, layer_idx))
+    
     -- Ensure layer has a proper name
     if not layer.name or layer.name == "" then
         layer.name = string.format("Sound Layer %d", layer_idx)
@@ -635,15 +636,27 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         layer.temp_name = layer.name
     end
 
+    -- Get available width and calculate margins
+    local contentWidth = reaper.ImGui_GetContentRegionAvail(ctx)
+    local margin = 10  -- Margin size
+    local headerWidth = contentWidth - (margin * 2)  -- Equal margins on both sides
+
+    -- Add left margin
+    reaper.ImGui_Indent(ctx, margin)
+    
     -- Header styling
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 8)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 6)  -- Reduced vertical padding
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.collapsable_header)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.collapsable_header_hover)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderActive(), COLORS.header + 0x222222FF)
 
-    -- Collapsing header
+    -- Create dummy for width control
+    reaper.ImGui_BeginGroup(ctx)
     local is_open = reaper.ImGui_CollapsingHeader(ctx, layer.name)
+    reaper.ImGui_EndGroup(ctx)
+    
+
     layer.is_open = is_open
 
     -- Restore header styles
@@ -655,10 +668,10 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ChildRounding(), 6.0)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ChildBg(), COLORS.sound_layer_container_bg)  -- Changed background color
         
-        if reaper.ImGui_BeginChild(ctx, "layer_content" .. layer_idx, -1, 320) then
-            -- Add same padding at top as left
+        if reaper.ImGui_BeginChild(ctx, "layer_content" .. layer_idx, -margin, 320) then
+            -- Add top padding
             reaper.ImGui_Spacing(ctx)
-            reaper.ImGui_Indent(ctx, 10)
+            reaper.ImGui_Indent(ctx, margin)
             -- Add right padding to match left
             reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 0)
 
@@ -741,16 +754,15 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             reaper.ImGui_PopStyleVar(ctx)
 
             -- Delete Button
-            if #instrument.sound_layers > 1 then
-                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
-                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
-                if reaper.ImGui_Button(ctx, string.format("Delete Sound Layer##delete_%d_%d", inst_idx, layer_idx), -1, 22) then
-                    table.remove(instrument.sound_layers, layer_idx)
-                end
-                reaper.ImGui_PopStyleColor(ctx, 2)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
+            if reaper.ImGui_Button(ctx, "Delete Sound Layer", -1, 22) then
+                -- Simply remove the layer without auto-creating a new one
+                table.remove(instrument.sound_layers, layer_idx)
             end
+            reaper.ImGui_PopStyleColor(ctx, 2)
 
-            reaper.ImGui_Unindent(ctx, 10)
+            reaper.ImGui_Unindent(ctx, margin)
             reaper.ImGui_PopStyleVar(ctx)
             reaper.ImGui_EndChild(ctx)
         end
@@ -758,6 +770,9 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         reaper.ImGui_PopStyleColor(ctx)
         reaper.ImGui_PopStyleVar(ctx)
     end
+
+    -- Remove the indent we added
+    reaper.ImGui_Unindent(ctx, margin)
 
     reaper.ImGui_PopID(ctx)
 end
@@ -809,7 +824,7 @@ local function drawInstrumentSection(ctx, state, index)
         reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 10)
         
         -- Begin child with explicit height
-        local contentHeight = 315 + (#inst.sound_layers * 50) 
+        local contentHeight = 315 + (#inst.sound_layers * 36) -- Reduced multiplier for tighter spacing
         reaper.ImGui_BeginChild(ctx, "inst_frame" .. index, -1, contentHeight)
 
         reaper.ImGui_Indent(ctx, 10)
@@ -877,10 +892,16 @@ local function drawInstrumentSection(ctx, state, index)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
 
-        if reaper.ImGui_Button(ctx, "Add New Sound Layer", -1, 30) then
-            local instrument = state.instrument_data[index]
-            if instrument then
-                table.insert(instrument.sound_layers, createNewSoundLayer(instrument))
+        local contentWidth = reaper.ImGui_GetContentRegionAvail(ctx)
+        local buttonWidth = contentWidth - 10  -- Subtract 10 to create 10px margin on each side
+        if #inst.sound_layers == 0 then
+            if reaper.ImGui_Button(ctx, "Add Sound Layer", buttonWidth, 30) then
+                table.insert(inst.sound_layers, createNewSoundLayer(inst))
+            end
+        else
+            -- Show regular "Add New Sound Layer" button if there are existing layers
+            if reaper.ImGui_Button(ctx, "Add New Sound Layer", buttonWidth, 30) then
+                table.insert(inst.sound_layers, createNewSoundLayer(inst))
             end
         end
 
@@ -913,8 +934,6 @@ local function drawUI(state)
     local visible, open = reaper.ImGui_Begin(ctx, "Preset Generator", true, window_flags)
     
     if visible then
-        reaper.ImGui_SetWindowSize(ctx, 450, 600, reaper.ImGui_Cond_FirstUseEver())
-        
         -- Add Preset Menu and Delete Dialog
         drawPresetMenu(ctx, state, COLORS)
         drawDeleteConfirmDialog(ctx, state)
