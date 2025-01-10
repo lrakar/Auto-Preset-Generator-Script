@@ -379,14 +379,15 @@ end
 
 
 local function rgb2num(r, g, b)
-    return r + (g * 256) + (b * 65536)
+    -- Convert RGB to RGBA hex format (alpha FF)
+    return (r << 0) | (g << 8) | (b << 16) | (0xFF << 24)
 end
 
 local function generateRandomColor()
     local r = math.random(50, 255)
     local g = math.random(50, 255)
     local b = math.random(50, 255)
-    return rgb2num(r, g, b)
+    return rgb2num(r, g, b)  -- Will return format like 0x0095C5FF
 end
 
 local function validateInteger(value)
@@ -483,28 +484,31 @@ local function generateRegionsAndMIDI(state)
     for i = 1, #state.instrument_data do
         local inst = state.instrument_data[i]
         
-        -- Create parent track
+        -- Generate one color per instrument ONCE at the start
+        local instrumentColor = generateRandomColor()
+        
+        -- Create parent track with the instrument color
         local parentIndex = reaper.CountTracks(0)
         reaper.InsertTrackAtIndex(parentIndex, true)
         local parentTrack = reaper.GetTrack(0, parentIndex)
         
         reaper.SetMediaTrackInfo_Value(parentTrack, "I_FOLDERDEPTH", 1)
-        reaper.SetMediaTrackInfo_Value(parentTrack, "D_VOL", 1.0)  -- Set volume to 0dB (1.0 = 0dB)
+        reaper.SetMediaTrackInfo_Value(parentTrack, "D_VOL", 1.0)
         reaper.GetSetMediaTrackInfo_String(parentTrack, "P_NAME", inst.name, true)
-        inst.parent_track_index = parentIndex
+        reaper.SetTrackColor(parentTrack, instrumentColor)  -- Set color
         inst.parent_track_index = parentIndex
 
-        -- First create all layer tracks
+        -- Create layer tracks with the same color
         local layer_tracks = {}
         for layer_idx, layer in ipairs(inst.sound_layers) do
             local layerIndex = reaper.CountTracks(0)
             reaper.InsertTrackAtIndex(layerIndex, true)
             local layerTrack = reaper.GetTrack(0, layerIndex)
             
-            -- Set track name using the layer name instead of generic Layer number
             reaper.SetMediaTrackInfo_Value(layerTrack, "I_FOLDERDEPTH", 0)
             reaper.GetSetMediaTrackInfo_String(layerTrack, "P_NAME", 
                 string.format("%s_%s", inst.name, layer.name), true)
+            reaper.SetTrackColor(layerTrack, instrumentColor)  -- Set same color
             
             -- Add plugin to track
             if layer.plugin and layer.plugin ~= "" then
@@ -584,7 +588,7 @@ local function generateRegionsAndMIDI(state)
                                     inst.name, d, v)
                                 reaper.AddProjectMarker2(0, true, current_pos, 
                                     current_pos + region_length, region_name, 
-                                    -1, generateRandomColor())
+                                    -1, instrumentColor)  -- Use instrument color instead of generating new one
                                 region_created = true
                             end
                             
@@ -639,7 +643,6 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
     -- Get available width and calculate margins
     local contentWidth = reaper.ImGui_GetContentRegionAvail(ctx)
     local margin = 10  -- Margin size
-    local headerWidth = contentWidth - (margin * 2)  -- Equal margins on both sides
 
     -- Add left margin
     reaper.ImGui_Indent(ctx, margin)
@@ -825,7 +828,6 @@ local function drawInstrumentSection(ctx, state, index)
         
         -- Begin child with explicit height
         local contentHeight = 315 + (#inst.sound_layers * 36) -- Reduced multiplier for tighter spacing
-        reaper.ImGui_BeginChild(ctx, "inst_frame" .. index, -1, contentHeight)
 
         reaper.ImGui_Indent(ctx, 10)
 
@@ -915,7 +917,6 @@ local function drawInstrumentSection(ctx, state, index)
         end
 
         reaper.ImGui_Unindent(ctx, 10)
-        reaper.ImGui_EndChild(ctx)
         
         reaper.ImGui_PopStyleVar(ctx, 2) -- Pop WindowPadding and ChildRounding
         reaper.ImGui_PopStyleColor(ctx)
