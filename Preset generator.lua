@@ -672,7 +672,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
         reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ChildRounding(), 6.0)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ChildBg(), COLORS.sound_layer_container_bg)  -- Changed background color
         
-        if reaper.ImGui_BeginChild(ctx, "layer_content" .. layer_idx, -margin, 320) then
+        if reaper.ImGui_BeginChild(ctx, "layer_content" .. layer_idx, -margin, 365) then
             -- Add top padding
             reaper.ImGui_Spacing(ctx)
             reaper.ImGui_Indent(ctx, margin)
@@ -697,7 +697,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             -- Note Input with Play Button
             styleInput(ctx)
             reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
-            reaper.ImGui_PushItemWidth(ctx, -80)
+            reaper.ImGui_PushItemWidth(ctx, 60)  -- Changed back to 60px width
             _, layer.note = reaper.ImGui_InputText(ctx, 
                 string.format("##note_%d_%d", inst_idx, layer_idx), 
                 layer.note or "")
@@ -707,12 +707,14 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             reaper.ImGui_SameLine(ctx)
             reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
             reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 4, 2)  -- Add back padding
             if reaper.ImGui_Button(ctx, string.format("Play##%d_%d", inst_idx, layer_idx), 70, 22) then
                 if parseNote(layer.note) then
                     playMIDINote(layer.note, 0.5)
                 end
             end
             reaper.ImGui_PopStyleColor(ctx, 2)
+            reaper.ImGui_PopStyleVar(ctx)
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
 
@@ -757,14 +759,16 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             reaper.ImGui_PopStyleColor(ctx, 2)
             reaper.ImGui_PopStyleVar(ctx)
 
-            -- Delete Button
+            -- Delete Button with minimal padding
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0)
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 2, 4)
             reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.error)
             reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.error + 0x222222FF)
-            if reaper.ImGui_Button(ctx, "Delete Sound Layer", -1, 22) then
-                -- Simply remove the layer without auto-creating a new one
+            if reaper.ImGui_Button(ctx, "Delete Sound Layer", 150, 22) then
                 table.remove(instrument.sound_layers, layer_idx)
             end
             reaper.ImGui_PopStyleColor(ctx, 2)
+            reaper.ImGui_PopStyleVar(ctx, 2)
 
             reaper.ImGui_Unindent(ctx, margin)
             reaper.ImGui_PopStyleVar(ctx)
