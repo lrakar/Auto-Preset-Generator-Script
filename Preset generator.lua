@@ -8,6 +8,7 @@ package.path = package.path .. ";" .. script_path .. "?.lua"
 local JSON = require("json")
 local MatrixView = require("matrix_view")
 local Settings = require("settings")
+local SampleMatrix = require("sample_matrix")
 
 -- Modern UI Color Scheme
 local COLORS = {
@@ -47,11 +48,56 @@ end
 local function savePreset(state)
     if state.preset_name == "" then return false, "Preset name cannot be empty" end
     
+    -- Process WAV samples before saving
     local presetData = {
         preset_name = state.preset_name,
         num_instruments = tonumber(state.num_instruments),
-        instruments = state.instrument_data
+        instruments = {}
     }
+    
+    -- Deep copy instrument data with WAV handling
+    for i, inst in ipairs(state.instrument_data) do
+        local instrument_copy = {
+            name = inst.name,
+            length = inst.length,
+            dynamics = inst.dynamics,
+            variations = inst.variations,
+            range_min = inst.range_min or 0,
+            range_max = inst.range_max or 127,
+            sound_layers = {}
+        }
+        
+        -- Process each sound layer
+        for j, layer in ipairs(inst.sound_layers) do
+            local layer_copy = {
+                name = layer.name,
+                layer_type = layer.layer_type,
+                velocity_min = layer.velocity_min,
+                velocity_max = layer.velocity_max,
+                start_layer = layer.start_layer,
+                end_layer = layer.end_layer
+            }
+            
+            -- Save type-specific data
+            if layer.layer_type == "midi" then
+                layer_copy.note = layer.note
+                layer_copy.plugin = layer.plugin
+            else
+                layer_copy.wav_path = layer.wav_path
+                -- Save sample analysis data if available
+                if layer.sample_ref then
+                    local sample_info = state.sample_matrix:getSampleInfo(layer.sample_ref)
+                    if sample_info then
+                        layer_copy.sample_data = sample_info
+                    end
+                end
+            end
+            
+            table.insert(instrument_copy.sound_layers, layer_copy)
+        end
+        
+        table.insert(presetData.instruments, instrument_copy)
+    end
     
     local fileName = string.format("%s/%s.json", getPresetsDirectory(), state.preset_name)
     local file = io.open(fileName, "w")
@@ -74,18 +120,57 @@ local function loadPreset(state, presetName)
     local presetData = JSON.decode(content)
     if not presetData then return false, "Invalid preset file" end
     
+    -- Initialize sample matrix if needed
+    if not state.sample_matrix then
+        state.sample_matrix = SampleMatrix:new()
+    end
+    
     -- Update state with loaded preset data
     state.preset_name = presetData.preset_name
     state.num_instruments = tostring(presetData.num_instruments)
-    state.instrument_data = presetData.instruments
+    state.instrument_data = {}
     
-    for _, inst in ipairs(state.instrument_data) do
-        if inst.range_min == nil then 
-            inst.range_min = 0 
+    -- Process loaded data
+    for _, inst in ipairs(presetData.instruments) do
+        local instrument = {
+            name = inst.name,
+            temp_name = inst.name,
+            length = inst.length,
+            dynamics = inst.dynamics,
+            variations = inst.variations,
+            range_min = inst.range_min or 0,
+            range_max = inst.range_max or 127,
+            sound_layers = {}
+        }
+        
+        -- Process sound layers
+        for _, layer in ipairs(inst.sound_layers) do
+            local new_layer = {
+                name = layer.name,
+                temp_name = layer.name,
+                layer_type = layer.layer_type,
+                velocity_min = layer.velocity_min,
+                velocity_max = layer.velocity_max,
+                start_layer = layer.start_layer,
+                end_layer = layer.end_layer
+            }
+            
+            -- Handle type-specific data
+            if layer.layer_type == "midi" then
+                new_layer.note = layer.note
+                new_layer.plugin = layer.plugin
+            else
+                new_layer.wav_path = layer.wav_path
+                -- Restore sample if possible
+                if layer.wav_path then
+                    attachSampleToLayer(new_layer, layer.wav_path, state.sample_matrix)
+                end
+            end
+            
+            table.insert(instrument.sound_layers, new_layer)
         end
-        if inst.range_max == nil then 
-            inst.range_max = 127 
-        end
+        
+        table.insert(state.instrument_data, instrument)
     end
     
     return true, "Preset loaded successfully"
@@ -369,8 +454,17 @@ local function createNewSoundLayer(instrument)
     return {
         name = default_name,
         temp_name = default_name,
+        layer_type = "midi",  -- New field: "midi" or "wav"
+        -- MIDI-specific fields
         note = "",
         plugin = "Kontakt 7",
+        -- WAV-specific fields
+        wav_path = nil,
+        sample_ref = nil,  -- Will hold reference to Sample object
+        peak_db = nil,     -- Peak dB value from analysis
+        rms_db = nil,      -- RMS dB value from analysis
+        amplitude = nil,    -- Normalized amplitude (0-127)
+        -- Common fields
         velocity_min = 0,
         velocity_max = 127,
         start_layer = 1,
@@ -380,15 +474,36 @@ local function createNewSoundLayer(instrument)
     }
 end
 
-
+-- Add bridge function to handle Sample Matrix integration
+local function attachSampleToLayer(layer, sample_path, sample_matrix)
+    if not sample_matrix then return false end
+    
+    -- Add sample to matrix if not already present
+    local sample = sample_matrix:findSampleByPath(sample_path)
+    if not sample then
+        sample = sample_matrix:addSampleDirect(sample_path)
+    end
+    
+    if sample then
+        layer.layer_type = "wav"
+        layer.wav_path = sample_path
+        layer.sample_ref = sample
+        layer.peak_db = sample.peak_db
+        layer.rms_db = sample.rms_db
+        layer.amplitude = sample.amplitude
+        return true
+    end
+    
+    return false
+end
 
 local function createNewInstrument()
     return {
         name = "",
         note = "",
-        length = "1.5",
-        dynamics = "",
-        variations = "",
+        length = Settings.get("default_length"),
+        dynamics = tostring(Settings.get("default_dynamics")),
+        variations = tostring(Settings.get("default_variations")),
         range_min = 0,
         range_max = 127,
         parent_track_index = nil,
@@ -428,6 +543,16 @@ local function toFloat(value)
     if not value then return nil end
     value = value:gsub(",", ".")
     return tonumber(value)
+end
+
+-- Add these utility functions near the top with other utility functions
+local function validateSample(layer)
+    return layer and 
+           layer.wav_path and 
+           layer.sample_ref and 
+           layer.sample_ref.source and 
+           layer.peak_db ~= nil and 
+           layer.amplitude ~= nil
 end
 
 -- Input validation function
@@ -470,13 +595,20 @@ local function validateInputs(state)
 
         -- Validate each sound layer
         for j, layer in ipairs(inst.sound_layers) do
-            if layer.note == "" then
-                state.error_messages["layer_note_" .. i .. "_" .. j] = "Note cannot be empty"
-                valid = false
-            else
-                local midiNote = parseNote(layer.note)
-                if not midiNote then
-                    state.error_messages["layer_note_" .. i .. "_" .. j] = "Invalid note. Please enter a note between C0 and C9"
+            if layer.layer_type == "midi" then
+                if layer.note == "" then
+                    state.error_messages["layer_note_" .. i .. "_" .. j] = "Note cannot be empty"
+                    valid = false
+                else
+                    local midiNote = parseNote(layer.note)
+                    if not midiNote then
+                        state.error_messages["layer_note_" .. i .. "_" .. j] = "Invalid note. Please enter a note between C0 and C9"
+                        valid = false
+                    end
+                end
+            elseif layer.layer_type == "wav" then
+                if not validateSample(layer) then
+                    state.error_messages["layer_sample_" .. i .. "_" .. j] = "WAV sample is missing or invalid"
                     valid = false
                 end
             end
@@ -492,7 +624,32 @@ local function validateInputs(state)
     return valid
 end
 
--- MIDI and Region generation function (kept the same as it works correctly)
+local function validateWAVSource(layer)
+    if not layer or not layer.wav_path then return false end
+    
+    -- Check if file exists
+    local file = io.open(layer.wav_path, "rb")
+    if not file then return false end
+    file:close()
+    
+    -- Check if sample reference is valid
+    if not layer.sample_ref or not layer.sample_ref.source then
+        -- Try to reload the sample
+        local source = reaper.PCM_Source_CreateFromFile(layer.wav_path)
+        if not source then return false end
+        
+        -- Create new sample if needed
+        if not layer.sample_ref then
+            layer.sample_ref = Sample:new(layer.wav_path, source)
+            layer.sample_ref:analyze()
+        else
+            layer.sample_ref.source = source
+        end
+    end
+    
+    return true
+end
+
 local function generateRegionsAndMIDI(state)
     if not validateInputs(state) then return end
 
@@ -506,21 +663,20 @@ local function generateRegionsAndMIDI(state)
     for i = 1, #state.instrument_data do
         local inst = state.instrument_data[i]
         
-        -- Generate one color per instrument ONCE at the start
+        -- Generate color for instrument
         local instrumentColor = generateRandomColor()
         
-        -- Create parent track with the instrument color
+        -- Create parent track
         local parentIndex = reaper.CountTracks(0)
         reaper.InsertTrackAtIndex(parentIndex, true)
         local parentTrack = reaper.GetTrack(0, parentIndex)
         
         reaper.SetMediaTrackInfo_Value(parentTrack, "I_FOLDERDEPTH", 1)
-        reaper.SetMediaTrackInfo_Value(parentTrack, "D_VOL", 1.0)
         reaper.GetSetMediaTrackInfo_String(parentTrack, "P_NAME", inst.name, true)
-        reaper.SetTrackColor(parentTrack, instrumentColor)  -- Set color
+        reaper.SetTrackColor(parentTrack, instrumentColor)
         inst.parent_track_index = parentIndex
 
-        -- Create layer tracks with the same color
+        -- Create layer tracks
         local layer_tracks = {}
         for layer_idx, layer in ipairs(inst.sound_layers) do
             local layerIndex = reaper.CountTracks(0)
@@ -530,14 +686,13 @@ local function generateRegionsAndMIDI(state)
             reaper.SetMediaTrackInfo_Value(layerTrack, "I_FOLDERDEPTH", 0)
             reaper.GetSetMediaTrackInfo_String(layerTrack, "P_NAME", 
                 string.format("%s_%s", inst.name, layer.name), true)
-            reaper.SetTrackColor(layerTrack, instrumentColor)  -- Set same color
+            reaper.SetTrackColor(layerTrack, instrumentColor)
             
-            -- Add plugin to track
-            if layer.plugin and layer.plugin ~= "" then
+            -- Add plugin if it's a MIDI layer
+            if layer.layer_type == "midi" and layer.plugin and layer.plugin ~= "" then
                 local fx_index = reaper.TrackFX_AddByName(layerTrack, layer.plugin, false, -1)
                 if fx_index >= 0 then
-                    -- Plugin added successfully
-                    reaper.TrackFX_Show(layerTrack, fx_index, 3) -- Show the plugin window
+                    reaper.TrackFX_Show(layerTrack, fx_index, 3)
                 end
             end
             
@@ -545,80 +700,91 @@ local function generateRegionsAndMIDI(state)
             layer_tracks[layer_idx] = layerTrack
         end
 
-        -- Now generate MIDI content
+        -- Generate content for dynamic layers and variations
         local region_length = toFloat(inst.length)
         local num_variations = tonumber(inst.variations)
 
-        -- Iterate through dynamics and variations first
         for d = 1, tonumber(inst.dynamics) do
             for v = 1, num_variations do
                 -- Process all sound layers for this dynamic/variation combination
-                local region_created = false  -- Track if region has been created for this d/v combo
+                local region_created = false
                 for layer_idx, layer in ipairs(inst.sound_layers) do
-                    -- Check if this dynamic layer is within the layer's range
                     if d >= layer.start_layer and d <= layer.end_layer then
-                        local noteNum = parseNote(layer.note)
-                        if noteNum then
-                            -- Calculate velocity
-                            local velocity
-                            if layer.end_layer > layer.start_layer then
-                                local fraction = (d - layer.start_layer) / (layer.end_layer - layer.start_layer)
-                                velocity = math.floor(
-                                    layer.velocity_min + (fraction * (layer.velocity_max - layer.velocity_min))
-                                )
-                            else
-                                velocity = layer.velocity_min
-                            end
-                            velocity = math.max(1, math.min(127, velocity))
+                        local track = reaper.GetTrack(0, layer.track_index)
+                        if not track then goto continue end
 
-                            -- Create MIDI item with forced initialization
-                            local item = reaper.CreateNewMIDIItemInProj(layer_tracks[layer_idx], 
-                                current_pos, current_pos + region_length)
-                            
-                            -- Initialize take
-                            local take = reaper.GetActiveTake(item)
-                            
-                            -- Create empty MIDI event to initialize take
-                            reaper.MIDI_InsertNote(take,
-                                false,    -- selected
-                                false,    -- muted
-                                0,        -- startppqpos
-                                1,        -- endppqpos
-                                1,        -- chan
-                                0,        -- pitch
-                                0)        -- vel
-                                
-                            -- Delete the empty note
-                            reaper.MIDI_DeleteNote(take, 0)
-                            
-                            -- Now insert our actual note
-                            reaper.MIDI_InsertNote(take, 
-                                false,    -- selected
-                                false,    -- muted
-                                0,        -- startppqpos
-                                math.floor((region_length * 960) / 16), -- endppqpos (sixteenth note length)
-                                1,        -- channel
-                                noteNum,  -- pitch
-                                velocity, -- velocity
-                                false)    -- noSortIn
-                            
-                            reaper.MIDI_Sort(take)
-                            
-                            -- Create region marker if not yet created for this d/v combination
-                            if not region_created then
-                                local region_name = string.format("%s_%d_%d",
-                                    inst.name, d, v)
-                                reaper.AddProjectMarker2(0, true, current_pos, 
-                                    current_pos + region_length, region_name, 
-                                    -1, instrumentColor)  -- Use instrument color instead of generating new one
-                                region_created = true
+                        -- Handle MIDI layers
+                        if layer.layer_type == "midi" then
+                            local noteNum = parseNote(layer.note)
+                            if noteNum then
+                                -- Calculate velocity based on dynamic layer
+                                local velocity = math.floor(layer.velocity_min + 
+                                    (layer.velocity_max - layer.velocity_min) * 
+                                    ((d - layer.start_layer) / (layer.end_layer - layer.start_layer + 1)))
+                                velocity = math.max(1, math.min(127, velocity))
+
+                                -- Create MIDI item
+                                local track = reaper.GetTrack(0, layer.track_index)
+                                if track then
+                                    local item = reaper.CreateNewMIDIItemInProj(track, current_pos, current_pos + region_length)
+                                    if item then
+                                        local take = reaper.GetActiveTake(item)
+                                        if take then
+                                            -- Insert MIDI note
+                                            reaper.MIDI_InsertNote(take, false, false, 0, region_length * 1000,
+                                                0, noteNum, velocity, false)
+                                        end
+                                        total_items = total_items + 1
+                                    end
+                                end
+                            end
+                        -- Handle WAV layers
+                        elseif layer.layer_type == "wav" then
+                            if not validateWAVSource(layer) then
+                                reaper.ShowMessageBox("Failed to load WAV file: " .. (layer.wav_path or "unknown"), "Error", 0)
+                                goto continue
                             end
                             
-                            total_items = total_items + 1
+                            -- Create media item
+                            local item = reaper.AddMediaItemToTrack(track)
+                            if item then
+                                local take = reaper.AddTakeToMediaItem(item)
+                                if take then
+                                    -- Set the source file
+                                    reaper.SetMediaItemTake_Source(take, layer.sample_ref.source)
+                                    
+                                    -- Get source length but respect region length if shorter
+                                    local source_length = reaper.GetMediaSourceLength(layer.sample_ref.source)
+                                    local item_length = math.min(source_length, region_length)
+                                    
+                                    -- Position and length
+                                    reaper.SetMediaItemPosition(item, current_pos, false)
+                                    reaper.SetMediaItemLength(item, item_length, false)
+                                    
+                                    -- Calculate and set volume based on dynamic layer
+                                    local volume = layer.sample_ref:getVolumeForDynamicLayer(d, layer.start_layer, layer.end_layer)
+                                    reaper.SetMediaItemTakeInfo_Value(take, "D_VOL", volume)
+                                    
+                                    -- Store metadata about the dynamic layer
+                                    local notes = string.format("Peak: %.1f dB | Dynamic Layer: %d/%d", 
+                                        layer.peak_db or 0, d, tonumber(inst.dynamics))
+                                    reaper.GetSetMediaItemTakeInfo_String(take, "P_NOTES", notes, true)
+                                    
+                                    total_items = total_items + 1
+                                end
+                            end
+                        end
+                        
+                        -- Create region if not already done for this dynamic/variation
+                        if not region_created then
+                            local region_name = string.format("%s_d%d_v%d", inst.name, d, v)
+                            reaper.AddProjectMarker2(0, true, current_pos, current_pos + region_length, region_name, -1, 0)
+                            region_created = true
                         end
                     end
+                    ::continue::
                 end
-                -- Only advance position after processing all layers for this dynamic/variation
+                -- Advance position after all layers are processed
                 current_pos = current_pos + region_length
             end
         end
@@ -634,9 +800,8 @@ local function generateRegionsAndMIDI(state)
     reaper.UpdateArrange()
     
     state.show_success = true
-    state.success_message = string.format("Successfully created %d regions and MIDI items", total_items)
+    state.success_message = string.format("Successfully created %d regions and items", total_items)
 end
-    
 
 -- Modern UI Components
 local function styleInput(ctx)
@@ -649,6 +814,23 @@ end
 local function endStyleInput(ctx)
     reaper.ImGui_PopStyleColor(ctx, 2)  -- Fixed: Added ctx parameter
     reaper.ImGui_PopStyleVar(ctx, 2)    -- Fixed: Added ctx parameter
+end
+
+local function showWAVLayerError(ctx, layer, COLORS)
+    if not layer.wav_path then
+        reaper.ImGui_TextColored(ctx, COLORS.error, "No WAV file selected")
+        return
+    end
+    
+    if not layer.sample_ref then
+        reaper.ImGui_TextColored(ctx, COLORS.error, "Failed to analyze WAV file")
+        return
+    end
+    
+    if not layer.sample_ref.source then
+        reaper.ImGui_TextColored(ctx, COLORS.error, "Invalid WAV file source")
+        return
+    end
 end
 
 local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx)
@@ -670,7 +852,7 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
     reaper.ImGui_Indent(ctx, margin)
     
     -- Header styling
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 6)  -- Reduced vertical padding
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 12, 6)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 6.0)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Header(), COLORS.collapsable_header)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_HeaderHovered(), COLORS.collapsable_header_hover)
@@ -680,7 +862,6 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
     reaper.ImGui_BeginGroup(ctx)
     local is_open = reaper.ImGui_CollapsingHeader(ctx, layer.name)
     reaper.ImGui_EndGroup(ctx)
-    
 
     layer.is_open = is_open
 
@@ -691,14 +872,13 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
     if is_open then
         -- Content container styling
         reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ChildRounding(), 6.0)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ChildBg(), COLORS.sound_layer_container_bg)  -- Changed background color
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ChildBg(), COLORS.sound_layer_container_bg)
         
-        if reaper.ImGui_BeginChild(ctx, "layer_content" .. layer_idx, -margin, 365) then
+        local child_height = 365
+        if reaper.ImGui_BeginChild(ctx, "layer_content_" .. inst_idx .. "_" .. layer_idx, contentWidth - margin * 2, child_height) then
             -- Add top padding
             reaper.ImGui_Spacing(ctx)
             reaper.ImGui_Indent(ctx, margin)
-            -- Add right padding to match left
-            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 0)
 
             -- Name Input
             styleInput(ctx)
@@ -715,38 +895,137 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
 
-            -- Note Input with Play Button
+            -- Layer Type Selection
             styleInput(ctx)
-            reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
-            reaper.ImGui_PushItemWidth(ctx, 60)  -- Changed back to 60px width
-            _, layer.note = reaper.ImGui_InputText(ctx, 
-                string.format("##note_%d_%d", inst_idx, layer_idx), 
-                layer.note or "")
-            reaper.ImGui_PopItemWidth(ctx)
-
-            -- Play Button
-            reaper.ImGui_SameLine(ctx)
-            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
-            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 4, 2)  -- Add back padding
-            if reaper.ImGui_Button(ctx, string.format("Play##%d_%d", inst_idx, layer_idx), 70, 22) then
-                if parseNote(layer.note) then
-                    playMIDINote(layer.note, 0.5)
-                end
+            reaper.ImGui_Text(ctx, "Layer Type")
+            reaper.ImGui_PushItemWidth(ctx, 120)
+            local current_type = layer.layer_type == "wav" and 1 or 0
+            local type_options = { "MIDI", "WAV" }
+            local changed, new_type = reaper.ImGui_Combo(ctx, "##type_" .. layer_idx, current_type, table.concat(type_options, "\0") .. "\0")
+            if changed then
+                layer.layer_type = string.lower(type_options[new_type + 1])
             end
-            reaper.ImGui_PopStyleColor(ctx, 2)
-            reaper.ImGui_PopStyleVar(ctx)
+            reaper.ImGui_PopItemWidth(ctx)
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
 
-            -- Plugin Input
-            styleInput(ctx)
-            reaper.ImGui_Text(ctx, "Plugin")
-            _, layer.plugin = reaper.ImGui_InputText(ctx, 
-                string.format("##plugin_%d_%d", inst_idx, layer_idx), 
-                layer.plugin or "Kontakt 7")
-            endStyleInput(ctx)
-            reaper.ImGui_Spacing(ctx)
+            if layer.layer_type == "midi" then
+                -- MIDI specific inputs
+                styleInput(ctx)
+                reaper.ImGui_Text(ctx, "Note (e.g., C4, F#3)")
+                reaper.ImGui_PushItemWidth(ctx, 60)  -- Changed back to 60px width
+                _, layer.note = reaper.ImGui_InputText(ctx, 
+                    string.format("##note_%d_%d", inst_idx, layer_idx), 
+                    layer.note or "")
+                reaper.ImGui_PopItemWidth(ctx)
+
+                -- Play Button for MIDI
+                reaper.ImGui_SameLine(ctx)
+                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+                reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 4, 2)  -- Add back padding
+                if reaper.ImGui_Button(ctx, string.format("Play##%d_%d", inst_idx, layer_idx), 70, 22) then
+                    if parseNote(layer.note) then
+                        playMIDINote(layer.note, 0.5)
+                    end
+                end
+                reaper.ImGui_PopStyleColor(ctx, 2)
+                reaper.ImGui_PopStyleVar(ctx)
+                endStyleInput(ctx)
+                reaper.ImGui_Spacing(ctx)
+
+                -- Plugin Input
+                styleInput(ctx)
+                reaper.ImGui_Text(ctx, "Plugin")
+                _, layer.plugin = reaper.ImGui_InputText(ctx, 
+                    string.format("##plugin_%d_%d", inst_idx, layer_idx), 
+                    layer.plugin or "Kontakt 7")
+                endStyleInput(ctx)
+                reaper.ImGui_Spacing(ctx)
+            else
+                -- WAV specific inputs
+                styleInput(ctx)
+                reaper.ImGui_Text(ctx, "Sample")
+                
+                -- Show current sample info or placeholder
+                local sample_text = "Drop WAV file here"
+                local is_valid_sample = layer.wav_path and layer.sample_ref and layer.sample_ref.source
+                
+                if is_valid_sample then
+                    local filename = layer.wav_path:match("([^/\\]+)$")
+                    sample_text = string.format("%s\nPeak: %.1f dB | Amplitude: %d", 
+                        filename, 
+                        layer.peak_db or 0, 
+                        layer.amplitude or 0)
+                end
+                
+                -- Sample button with status color
+                local button_color = is_valid_sample and COLORS.accent or COLORS.error
+                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), button_color)
+                
+                if reaper.ImGui_Button(ctx, sample_text, -1, 50) then
+                    if is_valid_sample then
+                        layer.sample_ref:play()
+                    end
+                end
+                reaper.ImGui_PopStyleColor(ctx)
+
+                -- Handle drag and drop for WAV files
+                if reaper.ImGui_BeginDragDropTarget(ctx) then
+                    -- Accept WAV files from system
+                    local payload = reaper.ImGui_AcceptDragDropPayload(ctx, "AUDIO_FILE")
+                    if payload then
+                        local success = attachSampleToLayer(layer, payload, state.sample_matrix)
+                        if not success then
+                            -- Show error if sample attachment failed
+                            layer.error_message = "Failed to load audio file"
+                        else
+                            layer.error_message = nil
+                        end
+                    end
+                    
+                    reaper.ImGui_EndDragDropTarget(ctx)
+                end
+
+                -- Show error message if any
+                if layer.error_message then
+                    reaper.ImGui_TextColored(ctx, COLORS.error, layer.error_message)
+                end
+
+                -- Show validation errors
+                if state.error_messages and state.error_messages["layer_sample_" .. inst_idx .. "_" .. layer_idx] then
+                    showWAVLayerError(ctx, layer, COLORS)
+                end
+
+                -- Show waveform preview if sample exists
+                if layer.sample_ref and layer.sample_ref.waveform then
+                    reaper.ImGui_Spacing(ctx)
+                    state.sample_matrix:drawWaveform(ctx, layer.sample_ref.waveform, -1, 40)
+                end
+
+                -- Display dynamic scaling info
+                if layer.sample_ref then
+                    reaper.ImGui_Spacing(ctx)
+                    reaper.ImGui_Text(ctx, string.format(
+                        "Dynamic Range: %.1f dB to %.1f dB",
+                        layer.peak_db - 12, -- -12dB for quietest
+                        layer.peak_db       -- Original peak for loudest
+                    ))
+                end
+
+                -- Show dynamic range preview
+                if is_valid_sample then
+                    reaper.ImGui_Spacing(ctx)
+                    local start_vol = layer.sample_ref:getVolumeForDynamicLayer(layer.start_layer, layer.start_layer, layer.end_layer)
+                    local end_vol = layer.sample_ref:getVolumeForDynamicLayer(layer.end_layer, layer.start_layer, layer.end_layer)
+                    reaper.ImGui_Text(ctx, string.format("Dynamic Range: %.1f dB to %.1f dB", 
+                        20 * math.log10(start_vol),
+                        20 * math.log10(end_vol)))
+                end
+                
+                endStyleInput(ctx)
+                reaper.ImGui_Spacing(ctx)
+            end
 
             -- Sliders styling
             reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_GrabRounding(), 6.0)
@@ -792,7 +1071,6 @@ local function drawSoundLayer(ctx, instrument, layer, layer_idx, state, inst_idx
             reaper.ImGui_PopStyleVar(ctx, 2)
 
             reaper.ImGui_Unindent(ctx, margin)
-            reaper.ImGui_PopStyleVar(ctx)
             reaper.ImGui_EndChild(ctx)
         end
         
@@ -959,8 +1237,6 @@ local function drawSettingsWindow(ctx, state)
         local visible, open = reaper.ImGui_Begin(ctx, "Settings##window", true, window_flags)
         
         if visible then
-            local settings_changed = false
-            
             -- UI Settings
             reaper.ImGui_TextColored(ctx, COLORS.accent, "UI Settings")
             reaper.ImGui_Separator(ctx)
@@ -972,7 +1248,7 @@ local function drawSettingsWindow(ctx, state)
             local changed
             changed, state.settings.font_size = reaper.ImGui_SliderInt(ctx, "##font_size", 
                 state.settings.font_size or Settings.get("font_size"), 8, 32, "%d px")
-            if changed then settings_changed = true end
+            if changed then Settings.set("font_size", state.settings.font_size) end
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
             
@@ -986,7 +1262,7 @@ local function drawSettingsWindow(ctx, state)
             reaper.ImGui_Text(ctx, "Default Plugin")
             changed, state.settings.default_plugin = reaper.ImGui_InputText(ctx, "##default_plugin", 
                 state.settings.default_plugin or Settings.get("default_plugin"))
-            if changed then settings_changed = true end
+            if changed then Settings.set("default_plugin", state.settings.default_plugin) end
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
             
@@ -995,7 +1271,25 @@ local function drawSettingsWindow(ctx, state)
             reaper.ImGui_Text(ctx, "Default Region Length (seconds)")
             changed, state.settings.default_length = reaper.ImGui_InputText(ctx, "##default_length", 
                 state.settings.default_length or Settings.get("default_length"))
-            if changed then settings_changed = true end
+            if changed then Settings.set("default_length", state.settings.default_length) end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Default dynamics
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Default Dynamic Layers")
+            changed, state.settings.default_dynamics = reaper.ImGui_SliderInt(ctx, "##default_dynamics", 
+                state.settings.default_dynamics or Settings.get("default_dynamics"), 0, 400, "%d")
+            if changed then Settings.set("default_dynamics", state.settings.default_dynamics) end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Default variations
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Default Variations")
+            changed, state.settings.default_variations = reaper.ImGui_SliderInt(ctx, "##default_variations", 
+                state.settings.default_variations or Settings.get("default_variations"), 0, 400, "%d")
+            if changed then Settings.set("default_variations", state.settings.default_variations) end
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
             
@@ -1009,39 +1303,21 @@ local function drawSettingsWindow(ctx, state)
             reaper.ImGui_Text(ctx, "Preview Note Velocity")
             changed, state.settings.preview_velocity = reaper.ImGui_SliderInt(ctx, "##preview_velocity", 
                 state.settings.preview_velocity or Settings.get("preview_velocity"), 1, 127, "%d")
-            if changed then settings_changed = true end
+            if changed then Settings.set("preview_velocity", state.settings.preview_velocity) end
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
             
-            -- Preview duration (using SliderDouble instead of SliderFloat)
+            -- Preview duration
             styleInput(ctx)
             reaper.ImGui_Text(ctx, "Preview Duration (seconds)")
             changed, state.settings.preview_duration = reaper.ImGui_SliderDouble(ctx, "##preview_duration", 
                 state.settings.preview_duration or Settings.get("preview_duration"), 0.1, 2.0, "%.1f")
-            if changed then settings_changed = true end
+            if changed then Settings.set("preview_duration", state.settings.preview_duration) end
             endStyleInput(ctx)
             reaper.ImGui_Spacing(ctx)
-            
-            -- Save and Reset buttons
-            reaper.ImGui_Spacing(ctx)
-            reaper.ImGui_Spacing(ctx)
-            
-            -- Save Button
-            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
-            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-            if reaper.ImGui_Button(ctx, "Save Settings", -1, 30) or settings_changed then
-                -- Save all settings
-                for key, value in pairs(state.settings) do
-                    Settings.set(key, value)
-                end
-                state.show_message = true
-                state.message = "Settings saved successfully"
-                state.message_type = "success"
-            end
-            reaper.ImGui_PopStyleColor(ctx, 2)
         end
         
-        -- Always end the window
+        -- End window
         reaper.ImGui_End(ctx)
         
         -- Handle window close button
@@ -1053,6 +1329,7 @@ end
 
 local function drawUI(state)
     -- Set window styling
+    reaper.ImGui_PushFont(ctx, state.font)  -- Push font at the start of drawUI
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_WindowBg(), COLORS.background)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), COLORS.text_primary)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 16, 16)
@@ -1064,6 +1341,7 @@ local function drawUI(state)
     if not visible then
         reaper.ImGui_PopStyleVar(ctx, 2)
         reaper.ImGui_PopStyleColor(ctx, 2)
+        reaper.ImGui_PopFont(ctx)  -- Pop font if we're returning early
         reaper.ImGui_End(ctx)
         return false
     end
@@ -1121,7 +1399,7 @@ local function drawUI(state)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
-    if reaper.ImGui_Button(ctx, "Generate Regions and MIDI", -1, 40) then
+    if reaper.ImGui_Button(ctx, "Generate", -1, 40) then
         generateRegionsAndMIDI(state)
     end
     reaper.ImGui_PopStyleVar(ctx)
@@ -1156,6 +1434,17 @@ local function drawUI(state)
     reaper.ImGui_PopStyleVar(ctx)
     reaper.ImGui_PopStyleColor(ctx, 2)
 
+    -- Sample Matrix Builder Button
+    reaper.ImGui_Spacing(ctx)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
+    if reaper.ImGui_Button(ctx, "Sample Matrix Builder", -1, 40) then
+        state.show_sample_matrix = not state.show_sample_matrix
+    end
+    reaper.ImGui_PopStyleVar(ctx)
+    reaper.ImGui_PopStyleColor(ctx, 2)
+
     -- End main window
     reaper.ImGui_End(ctx)
     reaper.ImGui_PopStyleVar(ctx, 2)
@@ -1166,10 +1455,20 @@ local function drawUI(state)
         MatrixView.showMatrixView(ctx, state, COLORS)
     end
 
+    -- Show sample matrix builder if enabled
+    if state.show_sample_matrix then
+        if not state.sample_matrix then
+            state.sample_matrix = SampleMatrix:new()
+        end
+        state.sample_matrix:draw(ctx, COLORS)
+    end
+
     -- Draw settings window if enabled
     if state.show_settings then
         drawSettingsWindow(ctx, state)
     end
+
+    reaper.ImGui_PopFont(ctx)  -- Pop font at the end of drawUI
 
     return open
 end
@@ -1243,8 +1542,15 @@ local function createUI()
         history = {},               -- Store state history
         history_index = 1,          -- Current position in history
         max_history = 50,            -- Maximum number of history states to keep
-        show_matrix = false         -- Track if matrix view is open
+        show_matrix = false,         -- Track if matrix view is open
+
+        -- Sample Matrix state
+        show_sample_matrix = false,  -- Controls sample matrix window visibility
+        sample_matrix = nil,         -- Will hold the sample matrix instance
     }
+    
+    -- Initialize sample matrix
+    state.sample_matrix = SampleMatrix:new()
     
     -- Initialize default instrument if empty
     if #state.instrument_data == 0 then

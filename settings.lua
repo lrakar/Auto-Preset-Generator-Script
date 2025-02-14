@@ -17,7 +17,9 @@ local defaults = {
     preview_duration = 0.5,
     autosave_interval = 5,
     autosave_enabled = true,
-    region_spacing = 0.0
+    region_spacing = 0.0,
+    default_dynamics = 10,    -- New default setting
+    default_variations = 1    -- New default setting
 }
 
 -- Current settings (initialized with defaults)
@@ -125,6 +127,10 @@ function Settings.validate(key, value)
     elseif key == "autosave_interval" then
         if value < 1 or value > 60 then
             return false, "Autosave interval must be between 1 and 60 minutes"
+        end
+    elseif key == "default_dynamics" or key == "default_variations" then
+        if value < 0 or value > 400 then
+            return false, "Value must be between 0 and 400"
         end
     end
     
