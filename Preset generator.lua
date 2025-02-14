@@ -7,6 +7,7 @@ local script_path = debug.getinfo(1, "S").source:match([[^@?(.*[\/])[^\/]-$]])
 package.path = package.path .. ";" .. script_path .. "?.lua"
 local JSON = require("json")
 local MatrixView = require("matrix_view")
+local Settings = require("settings")
 
 -- Modern UI Color Scheme
 local COLORS = {
@@ -120,6 +121,7 @@ local function drawPresetMenu(ctx, state, COLORS)
         local menuWidth = 200
         reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 4, 4)
         
+        -- Presets Menu (left side)
         if reaper.ImGui_BeginMenu(ctx, "Presets##main") then
             reaper.ImGui_SetNextWindowSize(ctx, menuWidth, 0)
             
@@ -220,6 +222,25 @@ local function drawPresetMenu(ctx, state, COLORS)
             end
             
             reaper.ImGui_EndMenu(ctx)
+        end
+        
+        -- Settings Icon (right side)
+        local windowWidth = reaper.ImGui_GetWindowContentRegionMax(ctx)
+        reaper.ImGui_SameLine(ctx)
+        reaper.ImGui_SetCursorPosX(ctx, windowWidth - 30) -- Position from right edge
+        
+        -- Load settings icon texture if not already loaded
+        if not state.settings_texture then
+            local script_path = debug.getinfo(1, "S").source:match([[^@?(.*[\/])[^\/]-$]])
+            local icon_path = script_path .. "media/settings_icon.png"
+            state.settings_texture = reaper.ImGui_CreateImage(icon_path)
+        end
+        
+        -- Draw settings icon as a button
+        if state.settings_texture then
+            if reaper.ImGui_ImageButton(ctx, "Settings", state.settings_texture, 20, 20) then
+                state.show_settings = not state.show_settings
+            end
         end
         
         reaper.ImGui_PopStyleVar(ctx)
@@ -929,6 +950,107 @@ local function drawInstrumentSection(ctx, state, index)
     end
 end
 
+local function drawSettingsWindow(ctx, state)
+    if state.show_settings then
+        local window_flags = reaper.ImGui_WindowFlags_NoCollapse()
+        reaper.ImGui_SetNextWindowSize(ctx, 400, 600, reaper.ImGui_Cond_FirstUseEver())
+        
+        -- Store window open state
+        local visible, open = reaper.ImGui_Begin(ctx, "Settings##window", true, window_flags)
+        
+        if visible then
+            local settings_changed = false
+            
+            -- UI Settings
+            reaper.ImGui_TextColored(ctx, COLORS.accent, "UI Settings")
+            reaper.ImGui_Separator(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Font size slider
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Font Size")
+            local changed
+            changed, state.settings.font_size = reaper.ImGui_SliderInt(ctx, "##font_size", 
+                state.settings.font_size or Settings.get("font_size"), 8, 32, "%d px")
+            if changed then settings_changed = true end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Default Values
+            reaper.ImGui_TextColored(ctx, COLORS.accent, "Default Values")
+            reaper.ImGui_Separator(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Default plugin
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Default Plugin")
+            changed, state.settings.default_plugin = reaper.ImGui_InputText(ctx, "##default_plugin", 
+                state.settings.default_plugin or Settings.get("default_plugin"))
+            if changed then settings_changed = true end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Default region length
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Default Region Length (seconds)")
+            changed, state.settings.default_length = reaper.ImGui_InputText(ctx, "##default_length", 
+                state.settings.default_length or Settings.get("default_length"))
+            if changed then settings_changed = true end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Preview Settings
+            reaper.ImGui_TextColored(ctx, COLORS.accent, "Preview Settings")
+            reaper.ImGui_Separator(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Preview velocity
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Preview Note Velocity")
+            changed, state.settings.preview_velocity = reaper.ImGui_SliderInt(ctx, "##preview_velocity", 
+                state.settings.preview_velocity or Settings.get("preview_velocity"), 1, 127, "%d")
+            if changed then settings_changed = true end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Preview duration (using SliderDouble instead of SliderFloat)
+            styleInput(ctx)
+            reaper.ImGui_Text(ctx, "Preview Duration (seconds)")
+            changed, state.settings.preview_duration = reaper.ImGui_SliderDouble(ctx, "##preview_duration", 
+                state.settings.preview_duration or Settings.get("preview_duration"), 0.1, 2.0, "%.1f")
+            if changed then settings_changed = true end
+            endStyleInput(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Save and Reset buttons
+            reaper.ImGui_Spacing(ctx)
+            reaper.ImGui_Spacing(ctx)
+            
+            -- Save Button
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+            if reaper.ImGui_Button(ctx, "Save Settings", -1, 30) or settings_changed then
+                -- Save all settings
+                for key, value in pairs(state.settings) do
+                    Settings.set(key, value)
+                end
+                state.show_message = true
+                state.message = "Settings saved successfully"
+                state.message_type = "success"
+            end
+            reaper.ImGui_PopStyleColor(ctx, 2)
+        end
+        
+        -- Always end the window
+        reaper.ImGui_End(ctx)
+        
+        -- Handle window close button
+        if not open then
+            state.show_settings = false
+        end
+    end
+end
+
 local function drawUI(state)
     -- Set window styling
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_WindowBg(), COLORS.background)
@@ -1034,14 +1156,19 @@ local function drawUI(state)
     reaper.ImGui_PopStyleVar(ctx)
     reaper.ImGui_PopStyleColor(ctx, 2)
 
-    -- End main window before showing matrix view
+    -- End main window
     reaper.ImGui_End(ctx)
     reaper.ImGui_PopStyleVar(ctx, 2)
     reaper.ImGui_PopStyleColor(ctx, 2)
 
-    -- Show matrix view in a separate window
+    -- Show matrix view in a separate window if enabled
     if state.show_matrix then
         MatrixView.showMatrixView(ctx, state, COLORS)
+    end
+
+    -- Draw settings window if enabled
+    if state.show_settings then
+        drawSettingsWindow(ctx, state)
     end
 
     return open
@@ -1050,13 +1177,21 @@ end
 local function createUI()
     ctx = reaper.ImGui_CreateContext('Preset Generator')
     
+    -- Initialize settings first
+    Settings.init()
+    
     -- Font configuration
-    local font_size = 14
+    local font_size = Settings.get("font_size")
     local font = reaper.ImGui_CreateFont('Calibri', font_size)
     reaper.ImGui_Attach(ctx, font)
     
     -- Initialize state
     local state = {
+        -- Settings state
+        settings_texture = nil,     -- Will hold the settings icon texture
+        show_settings = false,      -- Controls settings window visibility
+        settings = Settings.current, -- Use the settings module's current settings
+        
         -- Basic preset data
         preset_name = "",
         num_instruments = "",
@@ -1142,28 +1277,24 @@ local function createUI()
     
     -- Main loop function
 local function loop()
-    -- Check if context exists
     if not ctx then return end
-    
-    -- Push global styling
-    reaper.ImGui_PushFont(ctx, state.font)
     
     -- Handle input and updates
     handleInput()
     
-    -- Draw main UI
+    -- Push font once at the start
+    reaper.ImGui_PushFont(ctx, state.font)
+    
+    -- Draw main UI and get open state
     local open = drawUI(state)
     
-    -- Pop global styling
+    -- Pop font once at the end
     reaper.ImGui_PopFont(ctx)
     
     -- Continue loop if window is open
     if open then
         reaper.defer(loop)
     else
-        -- Store context before clearing
-        local context = ctx
-        
         -- Cleanup when closing
         if state.unsaved_changes then
             local save_success = savePreset(state)
@@ -1172,7 +1303,6 @@ local function loop()
                 state.error_timestamp = reaper.time_precise()
             end
         end
-
         ctx = nil
     end
 end
