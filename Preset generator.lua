@@ -6,6 +6,7 @@ local ctx = nil
 local script_path = debug.getinfo(1, "S").source:match([[^@?(.*[\/])[^\/]-$]])
 package.path = package.path .. ";" .. script_path .. "?.lua"
 local JSON = require("json")
+local MatrixView = require("matrix_view")
 
 -- Modern UI Color Scheme
 local COLORS = {
@@ -934,110 +935,111 @@ local function drawUI(state)
     local window_flags = reaper.ImGui_WindowFlags_NoCollapse() | reaper.ImGui_WindowFlags_MenuBar()
     local visible, open = reaper.ImGui_Begin(ctx, "Preset Generator", true, window_flags)
     
-    if visible then
-        -- Add Preset Menu and Delete Dialog
-        drawPresetMenu(ctx, state, COLORS)
-        drawDeleteConfirmDialog(ctx, state)
-        
-        -- Main Settings
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Preset Name")
-        _, state.preset_name = reaper.ImGui_InputText(ctx, "##preset_name", state.preset_name)
-        if state.error_messages.preset then
-            reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages.preset)
-        end
-        endStyleInput(ctx)
-        
-        reaper.ImGui_Spacing(ctx)
-        
-        styleInput(ctx)
-        reaper.ImGui_Text(ctx, "Number of Instruments")
-        local prev_num = state.num_instruments
-        _, state.num_instruments = reaper.ImGui_InputText(ctx, "##num_instruments", state.num_instruments)
-        
-        if state.num_instruments ~= prev_num and validateInteger(state.num_instruments) then
-            local new_count = tonumber(state.num_instruments)
-            while #state.instrument_data < new_count do
-                table.insert(state.instrument_data, createNewInstrument())
-            end
-            while #state.instrument_data > new_count do
-                table.remove(state.instrument_data)
-            end
-        end
-        
-        if state.error_messages.instruments then
-            reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages.instruments)
-        end
-        endStyleInput(ctx)
-        
-        reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_Spacing(ctx)
-        
-        -- Instrument Sections
-        if validateInteger(state.num_instruments) then
-            for i = 1, #state.instrument_data do
-                drawInstrumentSection(ctx, state, i)
-            end
-        end
-        
-        -- Generate and Save Buttons
-        reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_Spacing(ctx)
-        
-        -- Generate Button
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
-        if reaper.ImGui_Button(ctx, "Generate Regions and MIDI", -1, 40) then
-            generateRegionsAndMIDI(state)
-        end
-        reaper.ImGui_PopStyleVar(ctx)
+    if not visible then
+        reaper.ImGui_PopStyleVar(ctx, 2)
         reaper.ImGui_PopStyleColor(ctx, 2)
-        
-        -- Save Preset Button
-        reaper.ImGui_Spacing(ctx)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
-        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
-        if reaper.ImGui_Button(ctx, "Save Preset", -1, 40) then
-            local success, message = savePreset(state)
-            state.show_message = true
-            state.message = message
-            state.message_type = success and "success" or "error"
+        reaper.ImGui_End(ctx)
+        return false
+    end
+
+    -- Add Preset Menu and Delete Dialog
+    drawPresetMenu(ctx, state, COLORS)
+    drawDeleteConfirmDialog(ctx, state)
+    
+    -- Main Settings
+    styleInput(ctx)
+    reaper.ImGui_Text(ctx, "Preset Name")
+    _, state.preset_name = reaper.ImGui_InputText(ctx, "##preset_name", state.preset_name)
+    if state.error_messages.preset then
+        reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages.preset)
+    end
+    endStyleInput(ctx)
+    
+    reaper.ImGui_Spacing(ctx)
+    
+    styleInput(ctx)
+    reaper.ImGui_Text(ctx, "Number of Instruments")
+    local prev_num = state.num_instruments
+    _, state.num_instruments = reaper.ImGui_InputText(ctx, "##num_instruments", state.num_instruments)
+    
+    if state.num_instruments ~= prev_num and validateInteger(state.num_instruments) then
+        local new_count = tonumber(state.num_instruments)
+        while #state.instrument_data < new_count do
+            table.insert(state.instrument_data, createNewInstrument())
         end
-        reaper.ImGui_PopStyleVar(ctx)
-        reaper.ImGui_PopStyleColor(ctx, 2)
-        
-        -- Success/Error Messages
-        if state.show_message then
-            reaper.ImGui_Spacing(ctx)
-            local color = state.message_type == "success" and COLORS.success or COLORS.error
-            reaper.ImGui_TextColored(ctx, color, state.message)
-            
-            -- Clear message after delay
-            if not state.message_start then
-                state.message_start = reaper.time_precise()
-            elseif reaper.time_precise() - state.message_start > 3 then
-                state.show_message = false
-                state.message = nil
-                state.message_type = nil
-                state.message_start = nil
-            end
-        end
-        
-        -- Success Message (from generate function)
-        if state.show_success then
-            reaper.ImGui_Spacing(ctx)
-            reaper.ImGui_TextColored(ctx, COLORS.success, state.success_message)
+        while #state.instrument_data > new_count do
+            table.remove(state.instrument_data)
         end
     end
     
-    reaper.ImGui_End(ctx)
+    if state.error_messages.instruments then
+        reaper.ImGui_TextColored(ctx, COLORS.error, state.error_messages.instruments)
+    end
+    endStyleInput(ctx)
     
-    -- Pop window styling
-    reaper.ImGui_PopStyleVar(ctx, 2)
+    reaper.ImGui_Spacing(ctx)
+    reaper.ImGui_Spacing(ctx)
+    
+    -- Instrument Sections
+    if validateInteger(state.num_instruments) then
+        for i = 1, #state.instrument_data do
+            drawInstrumentSection(ctx, state, i)
+        end
+    end
+    
+    -- Generate and Save Buttons
+    reaper.ImGui_Spacing(ctx)
+    reaper.ImGui_Spacing(ctx)
+    
+    -- Generate Button
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
+    if reaper.ImGui_Button(ctx, "Generate Regions and MIDI", -1, 40) then
+        generateRegionsAndMIDI(state)
+    end
+    reaper.ImGui_PopStyleVar(ctx)
     reaper.ImGui_PopStyleColor(ctx, 2)
     
+    -- Save Preset Button
+    reaper.ImGui_Spacing(ctx)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
+    if reaper.ImGui_Button(ctx, "Save Preset", -1, 40) then
+        local success, message = savePreset(state)
+        state.show_message = true
+        state.message = message
+        state.message_type = success and "success" or "error"
+    end
+    reaper.ImGui_PopStyleVar(ctx)
+    reaper.ImGui_PopStyleColor(ctx, 2)
+
+    -- Matrix View Button
+    reaper.ImGui_Spacing(ctx)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), COLORS.accent)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), COLORS.accent_hover)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4.0)
+    if reaper.ImGui_Button(ctx, "Show Matrix View", -1, 40) then
+        state.show_matrix = not state.show_matrix
+        -- Reset any lingering state when toggling
+        if state.show_matrix then
+            state.matrix_maximized = false
+        end
+    end
+    reaper.ImGui_PopStyleVar(ctx)
+    reaper.ImGui_PopStyleColor(ctx, 2)
+
+    -- End main window before showing matrix view
+    reaper.ImGui_End(ctx)
+    reaper.ImGui_PopStyleVar(ctx, 2)
+    reaper.ImGui_PopStyleColor(ctx, 2)
+
+    -- Show matrix view in a separate window
+    if state.show_matrix then
+        MatrixView.showMatrixView(ctx, state, COLORS)
+    end
+
     return open
 end
 
@@ -1101,7 +1103,8 @@ local function createUI()
         -- Undo/Redo state
         history = {},               -- Store state history
         history_index = 1,          -- Current position in history
-        max_history = 50            -- Maximum number of history states to keep
+        max_history = 50,            -- Maximum number of history states to keep
+        show_matrix = false         -- Track if matrix view is open
     }
     
     -- Initialize default instrument if empty
